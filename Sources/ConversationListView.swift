@@ -151,12 +151,16 @@ struct ConversationListView: View {
     }
 
     private func preview(_ conversation: Conversation) -> String {
-        guard let last = conversation.messages.last else { return "还没有消息" }
-        let text = last.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty {
-            return last.attachments.isEmpty ? "还没有消息" : "附件"
+        let usable = conversation.messages.last { message in
+            (message.role == .user || message.role == .assistant)
+                && !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        return text.replacingOccurrences(of: "\n", with: " ")
+        guard let last = usable else {
+            return conversation.messages.isEmpty ? "还没有消息" : "附件"
+        }
+        return last.text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func newChat() {

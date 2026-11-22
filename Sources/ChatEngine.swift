@@ -203,7 +203,13 @@ final class ChatEngine: ObservableObject {
 
                 let result: String
                 if approved {
-                    result = await ToolCenter.shared.run(call, settings: settings)
+                    let raw = await ToolCenter.shared.run(call, settings: settings)
+                    // 工具输出过长会撑爆上下文，截断后再回填给模型
+                    if raw.count > 8_000 {
+                        result = String(raw.prefix(8_000)) + "\n…（输出过长已截断）"
+                    } else {
+                        result = raw
+                    }
                 } else {
                     result = "用户拒绝了这次工具调用。请换一种方式回答，或向用户说明需要这项权限。"
                 }
