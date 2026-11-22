@@ -23,10 +23,13 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: AI对话
-        CFBundleShortVersionString: "2.2"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "2.3"
+        CFBundleVersion: "4"
         LSRequiresIPhoneOS: true
         UIDesignRequiresCompatibility: false
+        # 让 App 的 Documents 出现在「文件」App 里，方便拖放文件/日志
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         # 允许用户自填的 http 端点（本地 Ollama / LM Studio 等）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
@@ -52,8 +55,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.operit.aichat
         PRODUCT_NAME: AIChat
-        MARKETING_VERSION: "2.2"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "2.3"
+        CURRENT_PROJECT_VERSION: "4"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: "NO"

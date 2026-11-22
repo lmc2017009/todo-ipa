@@ -299,11 +299,21 @@ final class ChatEngine: ObservableObject {
             } else if settings.terminalConfigured {
                 lines.append("终端工具会把你给的命令转发到用户配置的远程执行器执行。")
             } else {
-                lines.append("终端工具当前是 App 沙盒内的模拟终端，只能读写 App 自己的文档目录；需要真实 shell 时，提示用户在「设置」填写远程终端地址。")
+                lines.append("""
+                沙盒受限模式（普通签名安装，私有 entitlements 不生效）：
+                - 终端工具只是 App 内部的命令模拟器，没有 fork/exec，不能运行 busybox。不要反复尝试 /var/mobile、/var/containers、其他 App 的容器、sms.db，这些在本机一定失败。
+                - 要读写 App 沙盒外的文件：先调用 dir_grant，用户会在系统「文件」选择器里授权一个目录（可以选「我的 iPhone」下某个 App 的文件夹）；之后用 grant:标签/文件名 读写、列举、搜索。
+                - 相册/通讯录/日历/提醒事项用各自的专用工具；想确认当前权限边界时调用 access_report。
+                """)
             }
 
             if SandboxProbe.isSandboxEscaped {
                 lines.append("本机沙盒已解除：fs_* 与 shell 都支持绝对路径（如 /var/mobile/Library/SMS/sms.db），文档目录下另有 root/apps/groups/sms/media 符号链接；需要确认边界时调用 access_report。")
+            }
+
+            let grants = DirectoryGrant.summaryLines()
+            if !DirectoryGrant.all().isEmpty {
+                lines.append("用户已授权目录（用 grant:标签/... 访问）：\n" + grants.joined(separator: "\n"))
             }
 
             if WQSupport.isAvailable {

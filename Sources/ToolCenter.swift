@@ -44,9 +44,9 @@ final class ToolCenter {
         if set.contains(.fileSandbox) {
             let scope = escaped
                 ? "已解除沙盒，可直接使用绝对路径（如 /var/mobile/Library/SMS）"
-                : "当前只能访问 App 文档目录"
+                : "沙盒受限：可访问 App 文档目录（写作 /）以及用户已授权的目录（写作 grant:标签/子路径）"
             add("fs_list", "列出目录内容（\(scope)；根目录写作 /）",
-                ["path": ["type": "string", "description": "目录路径，如 / 或 /notes"]], [])
+                ["path": ["type": "string", "description": "目录路径，如 / 、/notes 或 grant:下载/子目录"]], [])
             add("fs_read", "读取文本文件（二进制文件会给出提示）",
                 ["path": ["type": "string"]], ["path"])
             add("fs_write", "写入文本文件，自动创建目录",
@@ -57,6 +57,12 @@ final class ToolCenter {
                 ["keyword": ["type": "string"],
                  "path": ["type": "string", "description": "可选，搜索起点；默认沙盒根"]],
                 ["keyword"])
+            add("dir_grant", "弹出系统目录选择器，让用户授权一个目录（可跨 App，如「我的 iPhone」里别的 App 文件夹）。授权后可用 grant:标签/... 访问。需要读取 App 沙盒外的文件时，先调用它",
+                ["label": ["type": "string", "description": "可选，给这个目录起的短标签，如 下载 / 微信文档"]],
+                [])
+            add("dir_list", "列出已授权的目录（标签与真实路径）", [:], [])
+            add("dir_revoke", "撤销一个已授权目录",
+                ["label": ["type": "string"]], ["label"])
         }
 
         if set.contains(.shell) {
@@ -130,7 +136,10 @@ final class ToolCenter {
             return DeviceProfile.summary()
 
         case "access_report":
-            return await Task.detached(priority: .userInitiated) { AccessReport.text() }.value
+            let grants = DirectoryGrant.summaryLines()
+            return await Task.detached(priority: .userInitiated) {
+                AccessReport.text(grants: grants)
+            }.value
 
         case "fs_list":
             return list(path: arguments["path"] as? String ?? "/")
@@ -151,6 +160,32 @@ final class ToolCenter {
         case "fs_search":
             guard let keyword = arguments["keyword"] as? String else { return "缺少参数 keyword" }
             return search(keyword: keyword, path: arguments["path"] as? String)
+
+        case "dir_grant":
+            let raw = (arguments["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let label = raw.isEmpty ? "目录\(DirectoryGrant.all().count + 1)" : raw
+            guard let url = await DirectoryGrant.presentPicker() else {
+                return "用户取消或超时，未授权任何目录"
+            }
+            guard let grant = DirectoryGrant.add(label: label, url: url) else {
+                return "授权失败：无法为该目录创建 bookmark"
+            }
+            return """
+            已授权：\(grant.path)
+            标签：\(label)
+            后续用 `grant:\(label)/文件名` 访问（可读写、可列举、可搜索）
+            """
+
+        case "dir_list":
+            let lines = DirectoryGrant.summaryLines()
+            if DirectoryGrant.all().isEmpty {
+                return "还没有授权任何目录。需要访问 App 沙盒外的文件时，调用 dir_grant 让用户选择一个目录。"
+            }
+            return "已授权目录：\n" + lines.joined(separator: "\n")
+
+        case "dir_revoke":
+            guard let label = arguments["label"] as? String else { return "缺少参数 label" }
+            return DirectoryGrant.remove(label: label) ? "已撤销授权：\(label)" : "没有找到标签为「\(label)」的授权"
 
         case "shell":
             guard let command = arguments["command"] as? String else { return "缺少参数 command" }
@@ -227,6 +262,21 @@ final class ToolCenter {
         var trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { trimmed = "/" }
 
+        // 用户显式授权的目录：grant:标签/子路径
+        if trimmed.lowercased().hasPrefix("grant:") {
+            let rest = String(trimmed.dropFirst("grant:".count))
+            let pieces = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+            let label = pieces.first.map(String.init) ?? ""
+            guard let base = DirectoryGrant.url(forLabel: label) else { return nil }
+            let sub = pieces.count > 1 ? String(pieces[1]) : ""
+            let candidate = (sub.isEmpty ? base : base.appendingPathComponent(sub)).standardizedFileURL
+            let basePath = base.standardizedFileURL.path
+            guard candidate.path == basePath || candidate.path.hasPrefix(basePath + "/") else {
+                return nil
+            }
+            return candidate
+        }
+
         // 已解除沙盒：绝对路径直接放行（全盘模式）
         if SandboxProbe.isSandboxEscaped, trimmed.hasPrefix("/") {
             return URL(fileURLWithPath: trimmed).standardizedFileURL
@@ -259,9 +309,8 @@ final class ToolCenter {
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey],
             options: options) else {
-            return "无法读取目录：\(path)（权限不足或不存在）"
+            return "无法读取目录：\(url.path)（权限不足或不存在）。沙盒受限时只能列举 / 与 grant:标签/...；要访问新目录请先调用 dir_grant。"
         }
-        if items.isEmpty { return "（空目录）" }
 
         var lines: [String] = []
         for item in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
@@ -280,7 +329,14 @@ final class ToolCenter {
                 lines.append("[文件] \(item.lastPathComponent)  \(size) B")
             }
         }
-        return lines.joined(separator: "\n")
+
+        if url.standardizedFileURL.path == documents().standardizedFileURL.path {
+            for line in DirectoryGrant.summaryLines() {
+                lines.append("[授权] " + line)
+            }
+        }
+
+        return lines.isEmpty ? "（空目录）" : lines.joined(separator: "\n")
     }
 
     private func read(path: String) -> String {
@@ -399,7 +455,11 @@ final class ToolCenter {
 
         switch head {
         case "help":
-            return "沙盒模拟终端。可用：pwd ls cat echo mkdir rm find df date whoami uname help"
+            return """
+            这不是真实 shell，只是 App 内部的受限命令模拟器（没有 fork/exec，无法运行 busybox）。
+            可用：pwd ls cat echo mkdir rm find df date whoami uname help
+            需要真实命令：在「设置」里填写远程执行器地址；需要沙盒外文件：先调用 dir_grant 授权目录，再用 fs_* 读写。
+            """
 
         case "pwd":
             return "/"
@@ -445,7 +505,14 @@ final class ToolCenter {
             return "iOS \(UIDevice.current.systemVersion) \(DeviceProfile.machineIdentifier())"
 
         default:
-            return "沙盒内不支持「\(head)」。可用：ls cat echo mkdir rm find df date whoami uname help"
+            return """
+            不支持「\(head)」：这不是真实 shell，没有 POSIX 执行能力，无法运行 \(head) 或 busybox。
+            现在能做的替代：
+            - 读写文件：fs_list / fs_read / fs_write / fs_search（沙盒外用 grant:标签/...）
+            - 沙盒外目录：先 dir_grant 让用户授权，再用 grant:标签/... 访问
+            - 真实命令：请用户在「设置 → 远程终端」填写执行器地址（HTTP POST {"cmd": ...}）
+            模拟命令仅支持：pwd ls cat echo mkdir rm find df date whoami uname help
+            """
         }
     }
 

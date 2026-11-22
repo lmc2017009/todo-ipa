@@ -61,7 +61,7 @@ enum CapabilityKind: String, CaseIterable, Codable, Identifiable {
         case .notifications: return "发本地通知提醒"
         case .shell:
             if LocalShell.isAvailable { return "本机真实终端（内置 BusyBox，无沙盒）" }
-            return "沙盒模拟终端 / 远程真终端"
+            return "命令模拟（沙盒内）/ 远程执行器"
         }
     }
 

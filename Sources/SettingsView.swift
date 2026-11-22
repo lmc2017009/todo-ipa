@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var testResult: (message: String, succeeded: Bool)?
     @State private var showTerminalHelp = false
     @State private var showClearConfirm = false
+    @State private var grants: [DirectoryGrant.Grant] = []
 
     var body: some View {
         NavigationStack {
@@ -17,6 +18,7 @@ struct SettingsView: View {
                     modelCard
                     chatCard
                     terminalCard
+                    grantsCard
                     dataCard
                     aboutCard
                 }
@@ -29,6 +31,9 @@ struct SettingsView: View {
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: store.settings) { _ in
                 store.saveSettings()
+            }
+            .onAppear {
+                grants = DirectoryGrant.all()
             }
             .confirmationDialog("清空所有对话？", isPresented: $showClearConfirm, titleVisibility: .visible) {
                 Button("清空", role: .destructive) {
@@ -341,6 +346,61 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - 已授权目录
+
+    private var grantsCard: some View {
+        SectionGlassCard(title: "已授权目录", icon: "folder.badge.plus") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("普通签名（全能签 / ESign / AltStore 等）会丢弃私有 entitlements，沙盒无法解除。要读写 App 之外的文件，用系统选择器授权目录，模型随后用 grant:标签/... 访问。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if grants.isEmpty {
+                    Text("还没有授权任何目录")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(grants) { grant in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("grant:\(grant.label)")
+                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                Text(grant.path)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Spacer(minLength: 6)
+                            Button(role: .destructive) {
+                                DirectoryGrant.remove(label: grant.label)
+                                grants = DirectoryGrant.all()
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+
+                Button {
+                    Task { @MainActor in
+                        guard let url = await DirectoryGrant.presentPicker() else { return }
+                        let name = url.lastPathComponent.isEmpty
+                            ? "目录\(DirectoryGrant.all().count + 1)"
+                            : url.lastPathComponent
+                        _ = DirectoryGrant.add(label: name, url: url)
+                        grants = DirectoryGrant.all()
+                    }
+                } label: {
+                    Label("添加目录…", systemImage: "plus.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
     // MARK: - 数据
 
     private var dataCard: some View {
@@ -373,7 +433,7 @@ struct SettingsView: View {
     private var aboutCard: some View {
         SectionGlassCard(title: "关于", icon: "info.circle") {
             VStack(alignment: .leading, spacing: 6) {
-                Text("AI 对话 2.1")
+                Text("AI 对话 2.3")
                     .font(.footnote.weight(.medium))
 
                 Text("纯 SwiftUI，自带设备能力与工具调用；能做什么取决于你接入的模型，以及「能力」页里授权了多少项。未越狱设备无法获取系统 root 或其他 App 的数据。")
