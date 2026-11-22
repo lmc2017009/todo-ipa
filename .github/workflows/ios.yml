@@ -18,12 +18,11 @@ jobs:
           XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
           if [ -z "$XCODE" ]; then
             XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-            echo "⚠️ 未找到 Xcode 26，回退到 $XCODE"
+            echo "未找到 Xcode 26，回退到 $XCODE"
           fi
           echo "使用 $XCODE"
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
-          xcode-select -p
           sw_vers
 
       - name: 安装 XcodeGen
@@ -36,8 +35,8 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
-            -project TodoApp.xcodeproj \
-            -scheme TodoApp \
+            -project AIChat.xcodeproj \
+            -scheme AIChat \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -47,26 +46,24 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tail -60
+            build 2>&1 | tail -80
 
       - name: 打包成 IPA（ad-hoc 签名）
         run: |
-          APP="build/Build/Products/Release-iphoneos/TodoApp.app"
+          APP="build/Build/Products/Release-iphoneos/AIChat.app"
           ls -la "$APP"
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          # ad-hoc 签名：不需要任何证书，签名工具之后会覆盖它
-          codesign --force --sign - --timestamp=none Payload/TodoApp.app || echo "ad-hoc 签名失败，仍继续打包"
-          codesign -dv Payload/TodoApp.app 2>&1 || true
-          zip -qry TodoApp-unsigned.ipa Payload
-          ls -lh TodoApp-unsigned.ipa
-          echo "IPA_SIZE=$(du -h TodoApp-unsigned.ipa | cut -f1)" >> $GITHUB_ENV
+          codesign --force --sign - --timestamp=none Payload/AIChat.app || echo "ad-hoc 签名失败，仍继续打包"
+          codesign -dv Payload/AIChat.app 2>&1 || true
+          zip -qry AIChat-unsigned.ipa Payload
+          ls -lh AIChat-unsigned.ipa
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: TodoApp-ipa
-          path: TodoApp-unsigned.ipa
+          name: AIChat-ipa
+          path: AIChat-unsigned.ipa
           retention-days: 7
           if-no-files-found: error
