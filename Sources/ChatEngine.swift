@@ -66,10 +66,12 @@ final class ChatEngine: ObservableObject {
         let settings = store.settings
         let client = APIClient(baseURL: settings.baseURL, apiKey: store.apiKey)
         let enabled = permissions.enabledKinds
+        // 相机 / 麦克风只做系统授权，没有对应的工具，避免提示里说了却调不到
+        let toolKinds = enabled.filter { $0 != .camera && $0 != .microphone }
 
         var tools: [[String: Any]] = []
-        if settings.enableTools && !enabled.isEmpty {
-            tools = ToolCenter.shared.definitions(enabled: enabled,
+        if settings.enableTools && !toolKinds.isEmpty {
+            tools = ToolCenter.shared.definitions(enabled: toolKinds,
                                                   terminalConfigured: settings.terminalConfigured)
         }
 
@@ -105,7 +107,7 @@ final class ChatEngine: ObservableObject {
             let payload = buildMessages(conversationID: conversationID,
                                        excluding: assistantID,
                                        searchBlock: searchBlock,
-                                       enabled: enabled,
+                                       enabled: toolKinds,
                                        settings: settings)
 
             var collectedText = ""
