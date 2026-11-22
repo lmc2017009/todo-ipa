@@ -170,9 +170,8 @@ enum AccessReport {
         var lines: [String] = []
         lines.append("- 相册：\(photoText(PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue))")
         lines.append("- 通讯录：\(contactText(CNContactStore.authorizationStatus(for: .contacts).rawValue))")
-        let store = EKEventStore()
-        lines.append("- 日历：\(eventText(store.authorizationStatus(for: .event).rawValue))")
-        lines.append("- 提醒事项：\(eventText(store.authorizationStatus(for: .reminder).rawValue))")
+        lines.append("- 日历：\(eventText(EKEventStore.authorizationStatus(for: .event).rawValue))")
+        lines.append("- 提醒事项：\(eventText(EKEventStore.authorizationStatus(for: .reminder).rawValue))")
         lines.append("- 相机：\(captureText(AVCaptureDevice.authorizationStatus(for: .video).rawValue))")
         lines.append("- 麦克风：\(captureText(AVCaptureDevice.authorizationStatus(for: .audio).rawValue))")
         return lines

@@ -1,37 +1,70 @@
-# AIChat 2.2 权限与打包说明（TrollStore / no-sandbox / 本机 BusyBox / WQ）
+# AIChat 2.3 权限与打包说明（真实边界版）
 
 > 仅用于你自己的设备、自己的数据与研究用途。把全盘读写能力交给 LLM 意味着模型能看到你设备上的几乎所有文件，请只接入可信的模型端点（`settings.baseURL` 不要填来历不明的中转），并保持「高危工具二次确认」开启或至少清楚风险。
 
-## 一、2.2 改了什么
+## 零、现实约束（务必先读，2.3 起写实）
+
+2026-11-22 在真机（iPhone16,1 / iOS 26.4，全能签安装）实测 `access_report`：
+
+```
+uid 501；沙盒未解除；App 容器 / App Group / /var/mobile/Library / SMS / /private/var/mobile / /var/jb / /Applications 全部不可读；
+仅 DCIM 可读；全盘写入不可用；内置终端未内置；WQ 未发现。
+```
+
+结论（不是 bug，是平台边界）：
+
+1. `com.apple.private.security.no-sandbox` / `platform-application` 这类私有 entitlements **只在 TrollStore 安装或越狱环境下被 AMFI 认可**。全能签 / ESign / AltStore / Sideloadly / 自签证书在重签时会把它们全部丢弃，App 只能以普通沙盒应用运行。
+2. TrollStore 只支持 **iOS 14.0–17.0**。iOS 18/26 及更新版本没有可用的 CoreTrust 类绕过，装不了。
+3. `posix_spawn` 只允许执行**受信任签名**的 Mach-O。没有越狱/TrollStore 时，即使把静态 busybox 放进 App 包或 Documents，也无法 `exec`（AMFI 拒绝）。
+4. 所以「全盘 + 真终端」在这类设备上**不可能**通过改代码获得；任何声称能做到的 App 都在用别的漏洞或需要越狱。
+
+2.3 的做法是：**把不可能的部分讲清楚，把可能的部分做实**。
+
+## 一、2.3 改了什么（相对 2.2）
 
 | 文件 | 改动 |
 |---|---|
-| `Sources/LocalShell.swift`（新增） | `posix_spawn` 拉起 App 包内 / `Documents/bin` 的静态 BusyBox，捕获 stdout+stderr，超时杀进程组；子进程继承当前进程沙盒状态 |
-| `Sources/SandboxProbe.swift`（新增） | 用真实 I/O 探测「是否已解除沙盒」、可读/可写路径、文档符号链接；`WQSupport` 探测 `wq` 可执行文件；`SandboxBootstrap` 启动时自动创建 `root/apps/groups/sms/media` 符号链接；`AccessReport` 生成给模型看的权限自检报告 |
-| `Sources/ToolCenter.swift` | 新增 `access_report` 工具；`shell` 优先走本机 BusyBox；`fs_*` 在已解除沙盒时支持绝对路径、包含隐藏文件、识别符号链接、二进制文件提示；`fs_read` 改为流式前缀读取；`fs_delete` 增加系统关键目录保护；`fs_search` 支持指定搜索起点 |
-| `Sources/ChatEngine.swift` | system 提示词注入运行时权限状态（沙盒 / 终端 / WQ）；工具输出上限改为可配置 |
-| `Sources/DeviceProfile.swift` | 设备档案增加「沙盒」「本机终端」两行 |
-| `Sources/Models.swift` | `APISettings` 新增 `toolOutputLimit`（默认 8000，可调 2000–64000） |
-| `Sources/SettingsView.swift` | 终端卡片显示 BusyBox 状态；新增工具输出上限设置 |
-| `Sources/Permissions.swift` / `PluginsView.swift` / `ContentView.swift` | 能力描述、脚注、启动引导随运行时状态变化 |
-| `AIChat.entitlements`（新增） | `platform-application`、`com.apple.private.security.no-sandbox`、`container-required=false`、`get-task-allow`、`AppDataContainers`、`application-groups` |
-| `.github/workflows/ios.yml` | 构建前可选下载 busybox / wq；打包时先签内置二进制，再用 entitlements 签主 App |
-| `Scripts/build.sh`（新增） | 本地 macOS 一键构建 + 签名脚本 |
+| `Sources/DirectoryGrant.swift`（新增） | 目录授权：`UIDocumentPickerViewController` 让用户选一个目录 → 存成 security-scoped bookmark → 用 `grant:标签/子路径` 读写。**普通签名即可生效**，是 iOS 上免越狱唯一的跨沙盒文件通道（可以选「我的 iPhone」里其他 App 的文件夹） |
+| `Sources/ToolCenter.swift` | 新增 `dir_grant` / `dir_list` / `dir_revoke`；`resolve()` 支持 `grant:` 前缀（越界校验仍保留）；`fs_list` 在根目录列出已授权目录；`fs_*` 的报错改为可执行的下一步建议；`shell` 在没有真实终端时明确说明「没有 POSIX 执行能力」，不再给出误导性的「沙盒内不支持 busybox」 |
+| `Sources/SandboxProbe.swift` | `AccessReport` 增加 TCC 授权状态（相册 / 通讯录 / 日历 / 提醒 / 相机 / 麦克风）、未解除沙盒的原因结论、已授权目录列表；`osVersion` 改用 `ProcessInfo`（可在后台线程安全调用） |
+| `Sources/ChatEngine.swift` | system 提示词新增「沙盒受限模式」段落：禁止模型反复尝试 `/var/mobile`、`/var/containers`、`sms.db`，引导走 `dir_grant` + `grant:` 路径；已授权目录直接列进提示词 |
+| `Sources/SettingsView.swift` | 新增「已授权目录」卡片：列表、删除、`添加目录…`（弹系统选择器） |
+| `project.yml` | 版本 2.3 (4)；新增 `UIFileSharingEnabled` + `LSSupportsOpeningDocumentsInPlace`（App 的 Documents 会出现在「文件」App 里，方便拖放日志/文件） |
 
-## 二、安装前提（能力天花板取决于这一层）
+2.2 留下的能力（`LocalShell` / `SandboxBootstrap` / `WQSupport` / entitlements / CI 签名链）**全部保留**：在 iOS ≤17 的 TrollStore 设备上依旧按原设计工作，不降级。
 
-1. 设备可安装 TrollStore（iOS 14–17.0 区间最稳，iOS 16.3+ 部分版本 WQ 已修复，iOS 17 部分小版本 seatbelt 有加固）。
-2. 用 TrollStore 安装 `AIChat-signed.ipa`。
-3. entitlements 已由 CI / `Scripts/build.sh` 通过 `codesign --entitlements` 写入；若你的安装链路会剥离 entitlements，请在安装前用 `ldid -SAIChat.entitlements Payload/AIChat.app/AIChat` 重新签一次主二进制。
+## 二、能力天花板对照（按安装方式）
 
-安装后 App 启动即可在「能力 → 本机档案」里看到：
+| 安装方式 | 沙盒 | 真终端 | 跨 App 文件 | 备注 |
+|---|---|---|---|---|
+| TrollStore（iOS 14–17.0） | 可解除 | 可（内置 busybox） | 可（全盘） | 本仓库的完整形态 |
+| 越狱 | 可解除 | 可 | 可 | 同上，还能装 `wq` |
+| 全能签 / ESign / AltStore / 自签 | **不可** | 不可 | 仅授权目录 + 相册 | 2.3 的 `dir_grant` 路线 |
+| 远程执行器 | 不涉及 | 可（在电脑上） | 可（电脑上） | 设置里填 `terminalHost`，App 只做转发 |
+
+## 三、免越狱怎么用（2.3 主推）
+
+1. 装好后进「设置 → 已授权目录 → 添加目录…」，选一个目录（例如「我的 iPhone → 某个 App」，或 iCloud Drive 里的文件夹）。
+2. 对模型说：`读取 grant:<标签> 里的文件列表`。模型会调用 `fs_list("grant:<标签>")`。
+3. 想给更多目录，就多授权几个；不想要了就点垃圾桶撤销。
+4. 相册/通讯录/日历/提醒依旧走专用工具（首次会弹 TCC 授权）。
+
+> 说明：`dir_grant` 弹的是系统选择器，只有用户点选才会授权，模型无法自己扩权；bookmark 存在 `UserDefaults`，App 重启后仍有效。
+
+## 四、TrollStore 路线（iOS ≤17，保持原样）
+
+1. 设备可安装 TrollStore（iOS 14–17.0 区间最稳）。
+2. 用 TrollStore 安装 `AIChat.ipa`。
+3. entitlements 已由 CI 通过 `codesign --entitlements` 写入；若安装链路会剥离 entitlements，用 `ldid -SAIChat.entitlements Payload/AIChat.app/AIChat` 重签主二进制。
+
+安装后「能力 → 本机档案」应显示：
 
 ```
 沙盒：已解除（全盘可读写）
 本机终端：已内置 BusyBox
 ```
 
-## 三、内置二进制放哪
+## 五、内置二进制放哪（仅 TrollStore / 越狱有意义）
 
 | 文件 | 位置 | 作用 |
 |---|---|---|
