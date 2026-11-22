@@ -95,7 +95,7 @@ struct SettingsView: View {
                     .disabled(testing)
                 }
 
-                Section("对话默认设置") {
+                Section {
                     Picker("深度思考", selection: $store.settings.thinkingLevel) {
                         ForEach(ThinkingLevel.allCases) { level in
                             Text(level.title).tag(level)
