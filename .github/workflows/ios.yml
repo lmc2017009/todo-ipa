@@ -1,0 +1,65 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 显示工具链版本
+        run: |
+          xcodebuild -version
+          xcode-select -p
+          sw_vers
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成 Xcode 工程
+        run: xcodegen generate
+
+      - name: 编译（不签名）
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project TodoApp.xcodeproj \
+            -scheme TodoApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tail -60
+
+      - name: 打包成 IPA（ad-hoc 签名）
+        run: |
+          APP="build/Build/Products/Release-iphoneos/TodoApp.app"
+          ls -la "$APP"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          # ad-hoc 签名：不需要任何证书，签名工具之后会覆盖它
+          codesign --force --sign - --timestamp=none Payload/TodoApp.app || echo "ad-hoc 签名失败，仍继续打包"
+          codesign -dv Payload/TodoApp.app 2>&1 || true
+          zip -qry TodoApp-unsigned.ipa Payload
+          ls -lh TodoApp-unsigned.ipa
+          echo "IPA_SIZE=$(du -h TodoApp-unsigned.ipa | cut -f1)" >> $GITHUB_ENV
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: TodoApp-ipa
+          path: TodoApp-unsigned.ipa
+          retention-days: 7
+          if-no-files-found: error
