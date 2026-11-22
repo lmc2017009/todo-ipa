@@ -17,6 +17,8 @@ enum DeviceProfile {
         lines.append("存储：\(diskText())")
         lines.append("网络：\(networkText())")
         lines.append("低电量模式：\(ProcessInfo.processInfo.isLowPowerModeEnabled ? "开" : "关")")
+        lines.append("沙盒：\(SandboxProbe.isSandboxEscaped ? "已解除（全盘可读写）" : "受限（仅 App 文档）")")
+        lines.append("本机终端：\(LocalShell.isAvailable ? "已内置 BusyBox" : "未内置")")
         lines.append("语言/时区：\(Locale.current.identifier) / \(TimeZone.current.identifier)")
         lines.append("当前时间：\(dateText(Date()))")
         return lines.joined(separator: "\n")

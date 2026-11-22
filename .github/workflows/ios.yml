@@ -25,6 +25,34 @@ jobs:
           xcodebuild -version
           sw_vers
 
+      - name: 准备内置二进制（busybox / wq，可选）
+        run: |
+          set -e
+          mkdir -p Resources
+
+          # 1. 优先使用仓库内的 Resources/busybox
+          if [ -f "Resources/busybox" ]; then
+            echo "使用仓库内的 Resources/busybox"
+          elif [ -n "${{ vars.BUSYBOX_URL }}" ]; then
+            echo "从仓库变量 BUSYBOX_URL 下载 busybox"
+            curl -L --fail -o Resources/busybox "${{ vars.BUSYBOX_URL }}"
+          else
+            echo "⚠️ 没有 busybox：本次构建只启用远程/模拟终端"
+          fi
+
+          # 2. WQ CLI（worse_query），可选
+          if [ -f "Resources/wq" ]; then
+            echo "使用仓库内的 Resources/wq（WQ 通道）"
+          elif [ -n "${{ vars.WQ_URL }}" ]; then
+            echo "从仓库变量 WQ_URL 下载 wq"
+            curl -L --fail -o Resources/wq "${{ vars.WQ_URL }}"
+          else
+            echo "没有 wq：WQ 通道留空，App 会正常降级"
+          fi
+
+          [ -f Resources/busybox ] && chmod +x Resources/busybox && file Resources/busybox || true
+          [ -f Resources/wq ] && chmod +x Resources/wq && file Resources/wq || true
+
       - name: 安装 XcodeGen
         run: brew install xcodegen
 
@@ -48,15 +76,31 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build 2>&1 | tail -80
 
-      - name: 打包成 IPA（ad-hoc 签名）
+      - name: 打包并注入 entitlements
         run: |
+          set -e
           APP="build/Build/Products/Release-iphoneos/AIChat.app"
           ls -la "$APP"
+
+          # 先签 bundle 内的可执行文件，再签主 App
+          for BIN in busybox wq; do
+            if [ -f "$APP/$BIN" ]; then
+              chmod +x "$APP/$BIN"
+              codesign --force --sign - --timestamp=none "$APP/$BIN" || echo "⚠️ $BIN 签名失败，继续"
+            fi
+          done
+
+          # 兼容放进 Resources 后仍带子目录的情况
+          find "$APP" -type f \( -name busybox -o -name wq \) -exec chmod +x {} \; -exec codesign --force --sign - --timestamp=none {} \; || true
+
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          codesign --force --sign - --timestamp=none Payload/AIChat.app || echo "ad-hoc 签名失败，仍继续打包"
-          codesign -dv Payload/AIChat.app 2>&1 || true
+
+          # 带 entitlements 的 ad-hoc 签名（no-sandbox / platform-application / app-group）
+          codesign --force --sign - --timestamp=none --entitlements AIChat.entitlements Payload/AIChat.app
+          codesign -dv --entitlements - Payload/AIChat.app 2>&1 || true
+
           zip -qry AIChat-unsigned.ipa Payload
           ls -lh AIChat-unsigned.ipa
 

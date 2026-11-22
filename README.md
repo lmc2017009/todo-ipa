@@ -83,4 +83,15 @@ HTTPServer(("0.0.0.0", 8765), H).serve_forever()
 - XcodeGen 工程即代码，`project.yml` 里含全部 Info.plist 权限说明。
 - GitHub Actions 强选 Xcode 26，`CODE_SIGNING_ALLOWED=NO` 构建，ad-hoc `codesign --sign -`，打包成未签名 IPA。
 - 仓库：`lmc2017009/todo-ipa`（仓库名沿用历史）；产物：`AIChat-unsigned.ipa`。
-- 版本：2.1 (2)，Bundle ID `com.operit.aichat`，最低 iOS 16.0，仅 iPhone。
+- 版本：2.2 (3)，Bundle ID `com.operit.aichat`，最低 iOS 16.0，仅 iPhone。
+
+## 七、2.2 权限增强（TrollStore / no-sandbox / 本机 BusyBox / WQ）
+
+2.2 在原有 13 项能力之上，把「模型能拿到的权限」做成可落地的三层：
+
+1. **本机真实终端**：`shell` 工具用 `posix_spawn` 拉起包内静态 BusyBox（`Resources/busybox` 或 `Documents/bin/busybox`），子进程继承 no-sandbox，真 fork、真进程。
+2. **全盘文件**：解除沙盒后 `fs_*` 直接支持绝对路径，并自动准备 `root/apps/groups/sms/media` 符号链接；新增 `access_report` 工具让模型自查权限边界。
+3. **WQ 通道**：`AIChat.entitlements` 带 `application-groups`，配合包内/文档内的 `wq` CLI，模型可用 `shell` 调用；也可用 dylib 注入让进程自持 sandbox extension。
+
+签名与安装步骤、冒烟测试、边界说明见 [`PERMISSIONS.md`](PERMISSIONS.md)。
+CI（`.github/workflows/ios.yml`）与本地脚本（`Scripts/build.sh`）会自动对内置二进制与主 App 签名，并注入 entitlements。

@@ -222,6 +222,17 @@ struct SettingsView: View {
                     }
                 }
 
+                Stepper(value: $store.settings.toolOutputLimit, in: 2_000...64_000, step: 2_000) {
+                    HStack {
+                        Text("工具输出上限")
+                            .font(.footnote)
+                        Spacer(minLength: 0)
+                        Text("\(store.settings.toolOutputLimit) 字符")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 HStack {
                     Text("默认思考档位")
                         .font(.footnote)
@@ -269,11 +280,24 @@ struct SettingsView: View {
                                 in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 Text(store.settings.terminalConfigured
-                     ? "已配置远程执行器，模型执行 shell 时会发到这台主机。"
-                     : "留空时用沙盒模拟终端，只能读写 App 文档目录。")
+                     ? "已配置远程执行器，本机 BusyBox 不可用时会转发到这台主机。"
+                     : "本机内置 BusyBox 可用时直接在本机执行；留空远程地址且未内置时为沙盒模拟终端。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 5) {
+                    Image(systemName: LocalShell.isAvailable ? "checkmark.seal" : "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(LocalShell.isAvailable ? Color.green : Color.orange)
+
+                    Text(LocalShell.isAvailable
+                         ? "本机终端：\(LocalShell.version)（TrollStore + no-sandbox 安装后可读全盘）"
+                         : "本机终端：未内置 BusyBox（把 busybox 放进 App 包或 Documents/bin 即可启用）")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showTerminalHelp.toggle() }

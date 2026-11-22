@@ -202,9 +202,11 @@ struct APISettings: Codable, Equatable {
     var enableTools: Bool = true
     /// 高危工具（写入/删除/终端/定位）执行前二次确认
     var confirmTools: Bool = true
-    /// 远程终端执行器（自己的电脑），留空则用沙盒模拟终端
+    /// 远程终端执行器（自己的电脑），留空则用本机 BusyBox / 沙盒模拟终端
     var terminalHost: String = ""
     var terminalToken: String = ""
+    /// 工具结果回填给模型时的最大字符数
+    var toolOutputLimit: Int = 8_000
 
     var terminalConfigured: Bool {
         !terminalHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -213,6 +215,7 @@ struct APISettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case baseURL, model, systemPrompt, thinkingLevel, webSearch
         case contextLimit, enableTools, confirmTools, terminalHost, terminalToken
+        case toolOutputLimit
     }
 
     init() { }
@@ -230,6 +233,7 @@ struct APISettings: Codable, Equatable {
         confirmTools = try container.decodeIfPresent(Bool.self, forKey: .confirmTools) ?? true
         terminalHost = try container.decodeIfPresent(String.self, forKey: .terminalHost) ?? ""
         terminalToken = try container.decodeIfPresent(String.self, forKey: .terminalToken) ?? ""
+        toolOutputLimit = try container.decodeIfPresent(Int.self, forKey: .toolOutputLimit) ?? 8_000
     }
 }
 

@@ -59,7 +59,9 @@ enum CapabilityKind: String, CaseIterable, Codable, Identifiable {
         case .calendar: return "查询近期日程"
         case .reminders: return "创建提醒事项"
         case .notifications: return "发本地通知提醒"
-        case .shell: return "沙盒模拟终端 / 远程真终端"
+        case .shell:
+            if LocalShell.isAvailable { return "本机真实终端（内置 BusyBox，无沙盒）" }
+            return "沙盒模拟终端 / 远程真终端"
         }
     }
 

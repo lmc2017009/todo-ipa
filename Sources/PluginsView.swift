@@ -236,7 +236,9 @@ struct CapabilityCenterView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            Text("iOS 的权限只能由系统弹窗授予，App 无法静默开启；被拒绝后需要到系统设置里手动打开。沙盒外的目录、其他 App 的数据、系统 root 在未越狱设备上无法获取，终端默认在沙盒内模拟，填写远程地址才会连真实 shell。")
+            Text(LocalShell.isAvailable
+                 ? "本机已内置真实终端（BusyBox）；若以 TrollStore + no-sandbox 安装，模型可读写全盘并跨 App 读取数据。全盘模式下请只接入可信的模型端点，并留意高危工具二次确认。"
+                 : "iOS 的权限只能由系统弹窗授予，App 无法静默开启；被拒绝后需要到系统设置里手动打开。把静态 busybox 放进 App 包或 Documents/bin 后可启用本机真实终端；未内置时终端默认在沙盒内模拟，填写远程地址才会连真实 shell。")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)

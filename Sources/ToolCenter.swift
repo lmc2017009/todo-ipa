@@ -33,26 +33,42 @@ final class ToolCenter {
 
         let set = Set(enabled)
 
+        // 已解除沙盒时，fs_* 支持绝对路径
+        let escaped = SandboxProbe.isSandboxEscaped
+
         if set.contains(.deviceInfo) {
             add("device_info", "读取本机档案：机型、系统、电量、内存、存储、网络、时间", [:], [])
+            add("access_report", "权限自检：当前沙盒状态、可读写的全盘路径、内置终端、WQ 通道、文档目录符号链接。不确定能力边界时先调用它", [:], [])
         }
 
         if set.contains(.fileSandbox) {
-            add("fs_list", "列出沙盒目录内容（根目录写作 /）",
+            let scope = escaped
+                ? "已解除沙盒，可直接使用绝对路径（如 /var/mobile/Library/SMS）"
+                : "当前只能访问 App 文档目录"
+            add("fs_list", "列出目录内容（\(scope)；根目录写作 /）",
                 ["path": ["type": "string", "description": "目录路径，如 / 或 /notes"]], [])
-            add("fs_read", "读取沙盒内的文本文件",
+            add("fs_read", "读取文本文件（二进制文件会给出提示）",
                 ["path": ["type": "string"]], ["path"])
-            add("fs_write", "在沙盒写入文本文件，自动创建目录",
+            add("fs_write", "写入文本文件，自动创建目录",
                 ["path": ["type": "string"], "content": ["type": "string"]], ["path", "content"])
-            add("fs_delete", "删除沙盒内的文件或目录",
+            add("fs_delete", "删除文件或目录（系统关键目录会被拒绝）",
                 ["path": ["type": "string"]], ["path"])
-            add("fs_search", "在沙盒内按关键词搜索文件名与文件内容",
-                ["keyword": ["type": "string"]], ["keyword"])
+            add("fs_search", "按关键词搜索文件名与文件内容",
+                ["keyword": ["type": "string"],
+                 "path": ["type": "string", "description": "可选，搜索起点；默认沙盒根"]],
+                ["keyword"])
         }
 
         if set.contains(.shell) {
-            let mode = terminalConfigured ? "已连接远程主机，可执行真实 shell 命令" : "当前是沙盒模拟终端，只能操作 App 文档目录"
-            add("shell", "执行 shell 命令。\(mode)。可用命令：ls/cat/echo/mkdir/rm/find/df/date/whoami/uname/help",
+            let mode: String
+            if LocalShell.isAvailable {
+                mode = "本机真实终端（内置 BusyBox，posix_spawn，无沙盒限制，可用绝对路径、管道、重定向）"
+            } else if terminalConfigured {
+                mode = "已连接远程主机，可执行真实 shell 命令"
+            } else {
+                mode = "当前是沙盒模拟终端，只能操作 App 文档目录"
+            }
+            add("shell", "执行 shell 命令。\(mode)。复杂或批量操作优先用它；不确定能力边界时先调用 access_report。",
                 ["command": ["type": "string"]], ["command"])
         }
 
@@ -113,6 +129,9 @@ final class ToolCenter {
         case "device_info":
             return DeviceProfile.summary()
 
+        case "access_report":
+            return await Task.detached(priority: .userInitiated) { AccessReport.text() }.value
+
         case "fs_list":
             return list(path: arguments["path"] as? String ?? "/")
 
@@ -131,14 +150,24 @@ final class ToolCenter {
 
         case "fs_search":
             guard let keyword = arguments["keyword"] as? String else { return "缺少参数 keyword" }
-            return search(keyword: keyword)
+            return search(keyword: keyword, path: arguments["path"] as? String)
 
         case "shell":
             guard let command = arguments["command"] as? String else { return "缺少参数 command" }
-            if settings.terminalHost.trimmingCharacters(in: .whitespaces).isEmpty {
-                return sandboxShell(command)
+            if LocalShell.isAvailable {
+                let result = await Task.detached(priority: .userInitiated) {
+                    LocalShell.run(command)
+                }.value
+                if let result {
+                    var text = "exit \(result.code)\n"
+                    text += result.output.isEmpty ? "（无输出）" : result.output
+                    return text
+                }
             }
-            return await remoteShell(command, settings: settings)
+            if !settings.terminalHost.trimmingCharacters(in: .whitespaces).isEmpty {
+                return await remoteShell(command, settings: settings)
+            }
+            return sandboxShell(command)
 
         case "clipboard":
             let action = (arguments["action"] as? String) ?? "get"
@@ -196,8 +225,16 @@ final class ToolCenter {
     private func resolve(_ path: String) -> URL? {
         let root = documents().standardizedFileURL
         var trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "/" { return root }
+        if trimmed.isEmpty { trimmed = "/" }
+
+        // 已解除沙盒：绝对路径直接放行（全盘模式）
+        if SandboxProbe.isSandboxEscaped, trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed).standardizedFileURL
+        }
+
+        if trimmed == "/" { return root }
         if trimmed.hasPrefix("/") { trimmed.removeFirst() }
+
         let candidate = root.appendingPathComponent(trimmed).standardizedFileURL
         guard candidate.path == root.path || candidate.path.hasPrefix(root.path + "/") else {
             return nil
@@ -215,21 +252,32 @@ final class ToolCenter {
 
     private func list(path: String) -> String {
         guard let url = resolve(path) else { return "路径越界，拒绝访问" }
+
+        let options: FileManager.DirectoryEnumerationOptions =
+            SandboxProbe.isSandboxEscaped ? [] : [.skipsHiddenFiles]
         guard let items = try? FileManager.default.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]) else {
-            return "无法读取目录：\(path)"
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey],
+            options: options) else {
+            return "无法读取目录：\(path)（权限不足或不存在）"
         }
         if items.isEmpty { return "（空目录）" }
 
         var lines: [String] = []
         for item in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-            if values?.isDirectory == true {
+            let values = try? item.resourceValues(
+                forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
+            let isLink = values?.isSymbolicLink == true
+            let isDir = values?.isDirectory == true
+            let size = values?.fileSize ?? 0
+
+            if isLink {
+                let target = (try? FileManager.default.destinationOfSymbolicLink(atPath: item.path)) ?? "?"
+                lines.append("[链接] \(item.lastPathComponent) -> \(target)")
+            } else if isDir {
                 lines.append("[目录] \(item.lastPathComponent)/")
             } else {
-                lines.append("[文件] \(item.lastPathComponent)  \(values?.fileSize ?? 0) B")
+                lines.append("[文件] \(item.lastPathComponent)  \(size) B")
             }
         }
         return lines.joined(separator: "\n")
@@ -237,12 +285,27 @@ final class ToolCenter {
 
     private func read(path: String) -> String {
         guard let url = resolve(path) else { return "路径越界，拒绝访问" }
-        guard let data = try? Data(contentsOf: url) else { return "读取失败：\(path)" }
-        if data.count > 200_000 {
-            let head = String(data: data.prefix(200_000), encoding: .utf8) ?? "（非文本内容）"
-            return "文件较大（\(data.count) 字节），只读取前 200 KB：\n" + head
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return "读取失败：\(path)"
         }
-        return String(data: data, encoding: .utf8) ?? "（不是文本文件，\(data.count) 字节）"
+        defer { try? handle.close() }
+
+        let limit = 400_000
+        let data = (try? handle.read(upToCount: limit)) ?? Data()
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attributes?[.size] as? NSNumber)?.intValue ?? data.count
+
+        if data.contains(0) {
+            return "二进制文件（\(size) 字节），不直接返回内容；可用 shell 的 strings / xxd / sqlite3 处理。"
+        }
+
+        let text = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+            ?? ""
+        if size > limit {
+            return "文件较大（\(size) 字节），只读取前 \(limit / 1000) KB：\n" + text
+        }
+        return text
     }
 
     private func write(path: String, content: String) -> String {
@@ -251,16 +314,35 @@ final class ToolCenter {
                                                  withIntermediateDirectories: true)
         do {
             try content.write(to: url, atomically: true, encoding: .utf8)
-            return "已写入 \(relativePath(url))（\(content.count) 字符）"
+            return "已写入 \(url.path)（\(content.count) 字符）"
         } catch {
             return "写入失败：\(error.localizedDescription)"
         }
     }
 
+    /// 系统 / 容器关键目录，禁止删除（防模型把设备搞坏）
+    private static let protectedPaths: Set<String> = [
+        "/", "/var", "/private", "/private/var", "/var/mobile",
+        "/var/mobile/Library", "/var/mobile/Containers",
+        "/var/mobile/Containers/Data", "/var/mobile/Containers/Bundle",
+        "/var/containers", "/var/containers/Bundle",
+        "/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/Developer"
+    ]
+
     private func delete(path: String) -> String {
-        guard let url = resolve(path), url.path != documents().standardizedFileURL.path else {
+        guard let url = resolve(path) else { return "路径越界，拒绝访问" }
+        let normalized = url.standardizedFileURL.path
+
+        if normalized == documents().standardizedFileURL.path {
             return "不能删除根目录"
         }
+        if Self.protectedPaths.contains(normalized) {
+            return "拒绝：\(normalized) 是系统/容器关键目录"
+        }
+        for protected in Self.protectedPaths where protected.hasPrefix(normalized + "/") {
+            return "拒绝：\(normalized) 包含系统关键目录 \(protected)"
+        }
+
         do {
             try FileManager.default.removeItem(at: url)
             return "已删除 \(path)"
@@ -269,26 +351,38 @@ final class ToolCenter {
         }
     }
 
-    private func search(keyword: String) -> String {
-        let root = documents()
+    private func search(keyword: String, path: String?) -> String {
+        let root: URL
+        if let path, !path.trimmingCharacters(in: .whitespaces).isEmpty {
+            guard let resolved = resolve(path) else { return "路径越界，拒绝访问" }
+            root = resolved
+        } else {
+            root = documents()
+        }
+
         var results: [String] = []
-        let keys: [URLResourceKey] = [.isDirectoryKey]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey]
+        let options: FileManager.DirectoryEnumerationOptions =
+            SandboxProbe.isSandboxEscaped ? [] : [.skipsHiddenFiles]
 
         if let enumerator = FileManager.default.enumerator(at: root,
                                                            includingPropertiesForKeys: keys,
-                                                           options: [.skipsHiddenFiles]) {
+                                                           options: options) {
             for case let url as URL in enumerator {
-                if results.count >= 20 { break }
+                if results.count >= 30 { break }
                 let values = try? url.resourceValues(forKeys: Set(keys))
                 if values?.isDirectory == true { continue }
 
                 if url.lastPathComponent.lowercased().contains(keyword.lowercased()) {
-                    results.append("[名字] \(relativePath(url))")
+                    results.append("[名字] \(url.path)")
                     continue
                 }
+
+                // 大文件跳过内容匹配，避免卡死
+                if let size = values?.fileSize, size > 2_000_000 { continue }
                 if let text = try? String(contentsOf: url, encoding: .utf8),
                    text.localizedCaseInsensitiveContains(keyword) {
-                    results.append("[内容] \(relativePath(url))")
+                    results.append("[内容] \(url.path)")
                 }
             }
         }
@@ -296,7 +390,7 @@ final class ToolCenter {
         return results.isEmpty ? "没有找到包含「\(keyword)」的文件" : results.joined(separator: "\n")
     }
 
-    // MARK: - 终端
+    // MARK: - 终端（沙盒模拟 / 远程执行器）
 
     private func sandboxShell(_ command: String) -> String {
         let parts = command.split(separator: " ").map(String.init)
@@ -336,7 +430,7 @@ final class ToolCenter {
 
         case "find":
             guard let keyword = arguments.first else { return "用法：find <关键词>" }
-            return search(keyword: keyword)
+            return search(keyword: keyword, path: nil)
 
         case "df":
             return DeviceProfile.diskText()

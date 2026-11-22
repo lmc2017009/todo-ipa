@@ -49,6 +49,7 @@ struct ContentView: View {
         .environmentObject(engine)
         .onAppear {
             permissions.refresh()
+            SandboxBootstrap.prepare()
         }
     }
 }

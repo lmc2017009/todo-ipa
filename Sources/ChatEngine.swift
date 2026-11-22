@@ -205,8 +205,9 @@ final class ChatEngine: ObservableObject {
                 if approved {
                     let raw = await ToolCenter.shared.run(call, settings: settings)
                     // 工具输出过长会撑爆上下文，截断后再回填给模型
-                    if raw.count > 8_000 {
-                        result = String(raw.prefix(8_000)) + "\n…（输出过长已截断）"
+                    let limit = max(2_000, min(settings.toolOutputLimit, 64_000))
+                    if raw.count > limit {
+                        result = String(raw.prefix(limit)) + "\n…（输出过长已截断，可用 shell 的 head / grep / sed 分段读取）"
                     } else {
                         result = raw
                     }
@@ -293,8 +294,20 @@ final class ChatEngine: ObservableObject {
             4. 只调用真正必要的工具，一次调用能解决就不要拆成多次。
             """)
 
-            if !settings.terminalConfigured {
+            if LocalShell.isAvailable {
+                lines.append("终端工具连接本机真实 BusyBox（posix_spawn，无沙盒），可直接执行任意 shell 命令、读写全盘路径、使用管道与重定向；批量或复杂操作优先用它。")
+            } else if settings.terminalConfigured {
+                lines.append("终端工具会把你给的命令转发到用户配置的远程执行器执行。")
+            } else {
                 lines.append("终端工具当前是 App 沙盒内的模拟终端，只能读写 App 自己的文档目录；需要真实 shell 时，提示用户在「设置」填写远程终端地址。")
+            }
+
+            if SandboxProbe.isSandboxEscaped {
+                lines.append("本机沙盒已解除：fs_* 与 shell 都支持绝对路径（如 /var/mobile/Library/SMS/sms.db），文档目录下另有 root/apps/groups/sms/media 符号链接；需要确认边界时调用 access_report。")
+            }
+
+            if WQSupport.isAvailable {
+                lines.append("WQ 通道可用：可以在 shell 里直接执行 wq 命令，对目标 App 沙盒取得 sandbox extension 后读取其数据。")
             }
         } else {
             lines.append("当前没有可用的设备工具，只能基于对话内容和你的知识回答。")
