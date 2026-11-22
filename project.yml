@@ -27,6 +27,9 @@ targets:
         CFBundleVersion: "1"
         LSRequiresIPhoneOS: true
         UIDesignRequiresCompatibility: false
+        # 允许用户自填的 http 端点（本地 Ollama / LM Studio 等）
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
         NSPhotoLibraryUsageDescription: 需要访问相册，以便在聊天中发送图片。
         NSCameraUsageDescription: 需要使用相机，以便拍照后发送到聊天。
         UILaunchScreen: {}
