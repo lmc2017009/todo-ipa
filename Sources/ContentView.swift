@@ -1,6 +1,66 @@
 import SwiftUI
 
+// MARK: - 根视图
+
+/// 三个页面：主页 / 插件 / 设置
+///
+/// 标签栏不画任何背景，完全交给系统：
+/// 用 iOS 26 SDK 编译后，TabView 底部的标签栏会自动变成
+/// 苹果的「液态玻璃」浮动胶囊（折射、高光、随滚动收起）。
 struct ContentView: View {
+    @State private var selection: AppTab = .home
+
+    var body: some View {
+        TabView(selection: $selection) {
+            HomeView()
+                .tabItem { Label("主页", systemImage: "house.fill") }
+                .tag(AppTab.home)
+
+            PluginsView()
+                .tabItem { Label("插件", systemImage: "puzzlepiece.extension.fill") }
+                .tag(AppTab.plugins)
+
+            SettingsView()
+                .tabItem { Label("设置", systemImage: "gearshape.fill") }
+                .tag(AppTab.settings)
+        }
+        .liquidGlassTabBar()
+    }
+}
+
+/// 标签页枚举
+enum AppTab: Hashable {
+    case home
+    case plugins
+    case settings
+}
+
+// MARK: - 液态玻璃标签栏
+
+private struct LiquidGlassTabBar: ViewModifier {
+    func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            content.tabBarMinimizeBehavior(.onScrollDown)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+extension View {
+    /// iOS 26 起启用液态玻璃标签栏；旧系统原样返回
+    func liquidGlassTabBar() -> some View {
+        modifier(LiquidGlassTabBar())
+    }
+}
+
+// MARK: - 主页
+
+struct HomeView: View {
     @EnvironmentObject private var store: TodoStore
     @State private var newTitle: String = ""
     @FocusState private var inputFocused: Bool
@@ -20,7 +80,7 @@ struct ContentView: View {
                     todoList
                 }
             }
-            .navigationTitle("清单")
+            .navigationTitle("主页")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -38,7 +98,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 子视图
+    // MARK: 子视图
 
     private var inputBar: some View {
         HStack(spacing: 10) {
@@ -112,7 +172,7 @@ struct ContentView: View {
         .background(.thinMaterial)
     }
 
-    // MARK: - 动作
+    // MARK: 动作
 
     private func commit() {
         guard canAdd else { return }
