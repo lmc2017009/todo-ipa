@@ -1,33 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  AIChat 签名权限（仅用于你自己的设备 / 研究用途）
-  使用方式：codesign --force --sign - --entitlements AIChat.entitlements Payload/AIChat.app
-  或者用 ldid -SAIChat.entitlements Payload/AIChat.app/AIChat 后再用 TrollStore 安装。
--->
 <plist version="1.0">
 <dict>
-    <!-- 平台应用：允许访问平台路径与容器管理接口 -->
     <key>platform-application</key>
     <true/>
-
-    <!-- 解除 Seatbelt 沙盒：进程与其 posix_spawn 子进程都不受沙盒限制 -->
     <key>com.apple.private.security.no-sandbox</key>
     <true/>
-
-    <!-- 不强制要求 container：允许在容器外运行 -->
     <key>com.apple.private.security.container-required</key>
     <false/>
-
-    <!-- 调试/注入友好 -->
     <key>get-task-allow</key>
     <true/>
-
-    <!-- 跨 App 数据容器读取（部分系统版本配合 no-sandbox 生效） -->
     <key>com.apple.private.security.storage.AppDataContainers</key>
     <true/>
-
-    <!-- WQ（worse_query）触发条件之一：App Group 权限 -->
     <key>com.apple.security.application-groups</key>
     <array>
         <string>group.com.operit.aichat</string>
