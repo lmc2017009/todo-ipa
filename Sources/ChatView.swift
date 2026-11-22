@@ -34,7 +34,7 @@ struct ChatView: View {
             .presentationDetents([.medium])
         }
         .fileImporter(isPresented: $showFileImporter,
-                      allowedContentTypes: [.plainText, .text, .json, .csv, .xml, .sourceCode],
+                      allowedContentTypes: [.plainText, .text, .json, .commaSeparatedText, .xml, .sourceCode],
                       allowsMultipleSelection: false) { result in
             handleFile(result)
         }
