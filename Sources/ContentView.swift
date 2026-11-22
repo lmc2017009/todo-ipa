@@ -1,51 +1,56 @@
 import SwiftUI
 
-enum AppTab: Hashable {
-    case home
-    case plugins
-    case settings
-}
-
 @MainActor
 struct ContentView: View {
-    @State private var selection: AppTab = .home
+    @StateObject private var store: ChatStore
+    @StateObject private var permissions: PermissionCenter
+    @StateObject private var approvals: ApprovalCenter
+    @StateObject private var engine: ChatEngine
+
+    @State private var tab: AppTab = .chat
+
+    init() {
+        let store = ChatStore()
+        let permissions = PermissionCenter()
+        let approvals = ApprovalCenter()
+
+        _store = StateObject(wrappedValue: store)
+        _permissions = StateObject(wrappedValue: permissions)
+        _approvals = StateObject(wrappedValue: approvals)
+        _engine = StateObject(wrappedValue: ChatEngine(store: store,
+                                                       permissions: permissions,
+                                                       approvals: approvals))
+    }
 
     var body: some View {
-        TabView(selection: $selection) {
-            ConversationListView(selectedTab: $selection)
-                .tabItem { Label("主页", systemImage: "bubble.left.and.bubble.right.fill") }
-                .tag(AppTab.home)
+        TabView(selection: $tab) {
+            ConversationListView(selectedTab: $tab)
+                .tabItem {
+                    Label("聊天", systemImage: "bubble.left.and.bubble.right.fill")
+                }
+                .tag(AppTab.chat)
 
-            PluginsView()
-                .tabItem { Label("插件", systemImage: "puzzlepiece.extension.fill") }
-                .tag(AppTab.plugins)
+            CapabilityCenterView()
+                .tabItem {
+                    Label("能力", systemImage: "square.stack.3d.up.fill")
+                }
+                .tag(AppTab.capabilities)
 
             SettingsView()
-                .tabItem { Label("设置", systemImage: "gearshape.fill") }
+                .tabItem {
+                    Label("设置", systemImage: "gearshape.fill")
+                }
                 .tag(AppTab.settings)
         }
-        .liquidGlassTabBar()
-    }
-}
-
-// MARK: - 液态玻璃标签栏（iOS 26）
-
-private struct LiquidGlassTabBar: ViewModifier {
-    func body(content: Content) -> some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            content.tabBarMinimizeBehavior(.onScrollDown)
-        } else {
-            content
+        .tint(.accentColor)
+        .environmentObject(store)
+        .environmentObject(permissions)
+        .environmentObject(approvals)
+        .environmentObject(engine)
+        .onAppear {
+            permissions.refresh()
         }
-        #else
-        content
-        #endif
     }
 }
 
-extension View {
-    func liquidGlassTabBar() -> some View {
-        modifier(LiquidGlassTabBar())
-    }
-}
+// 入口见 AIChatApp.swift

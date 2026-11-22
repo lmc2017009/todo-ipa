@@ -7,6 +7,15 @@ enum ChatRole: String, Codable {
     case system
     case user
     case assistant
+    case tool
+}
+
+// MARK: - 工具调用
+
+struct ToolCallRecord: Codable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    var arguments: String
 }
 
 // MARK: - 附件
@@ -44,8 +53,49 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     var thinking: String = ""
     var attachments: [Attachment] = []
     var sources: [SearchSource] = []
+    var toolCalls: [ToolCallRecord] = []
+    var toolCallID: String? = nil
+    var toolTrace: String = ""
     var createdAt = Date()
     var isError: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case id, role, text, thinking, attachments, sources
+        case toolCalls, toolCallID, toolTrace, createdAt, isError
+    }
+
+    /// 兼容旧版本没有工具字段的会话文件
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        role = try container.decodeIfPresent(ChatRole.self, forKey: .role) ?? .assistant
+        text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+        thinking = try container.decodeIfPresent(String.self, forKey: .thinking) ?? ""
+        attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        sources = try container.decodeIfPresent([SearchSource].self, forKey: .sources) ?? []
+        toolCalls = try container.decodeIfPresent([ToolCallRecord].self, forKey: .toolCalls) ?? []
+        toolCallID = try container.decodeIfPresent(String.self, forKey: .toolCallID)
+        toolTrace = try container.decodeIfPresent(String.self, forKey: .toolTrace) ?? ""
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        isError = try container.decodeIfPresent(Bool.self, forKey: .isError) ?? false
+    }
+
+    init(id: UUID = UUID(), role: ChatRole, text: String, thinking: String = "",
+         attachments: [Attachment] = [], sources: [SearchSource] = [],
+         toolCalls: [ToolCallRecord] = [], toolCallID: String? = nil,
+         toolTrace: String = "", createdAt: Date = Date(), isError: Bool = false) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.thinking = thinking
+        self.attachments = attachments
+        self.sources = sources
+        self.toolCalls = toolCalls
+        self.toolCallID = toolCallID
+        self.toolTrace = toolTrace
+        self.createdAt = createdAt
+        self.isError = isError
+    }
 }
 
 // MARK: - 会话
@@ -131,7 +181,6 @@ struct ModelInfo: Identifiable, Codable, Equatable {
     var ownedBy: String = ""
     var supportsThinking: Bool = false
 
-    /// 只根据模型名做“可能性”推断，真正是否支持由接口返回 / 400 自动降级决定
     static func inferThinking(_ modelID: String) -> Bool {
         let name = modelID.lowercased()
         let hints = ["reasoner", "reasoning", "thinking", "o1", "o3", "o4", "gpt-5",
@@ -149,6 +198,39 @@ struct APISettings: Codable, Equatable {
     var thinkingLevel: ThinkingLevel = .off
     var webSearch: Bool = false
     var contextLimit: Int = 20
+    /// 允许模型调用设备工具
+    var enableTools: Bool = true
+    /// 高危工具（写入/删除/终端/定位）执行前二次确认
+    var confirmTools: Bool = true
+    /// 远程终端执行器（自己的电脑），留空则用沙盒模拟终端
+    var terminalHost: String = ""
+    var terminalToken: String = ""
+
+    var terminalConfigured: Bool {
+        !terminalHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case baseURL, model, systemPrompt, thinkingLevel, webSearch
+        case contextLimit, enableTools, confirmTools, terminalHost, terminalToken
+    }
+
+    init() { }
+
+    /// 兼容旧版本配置文件
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? "https://api.openai.com/v1"
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt) ?? ""
+        thinkingLevel = try container.decodeIfPresent(ThinkingLevel.self, forKey: .thinkingLevel) ?? .off
+        webSearch = try container.decodeIfPresent(Bool.self, forKey: .webSearch) ?? false
+        contextLimit = try container.decodeIfPresent(Int.self, forKey: .contextLimit) ?? 20
+        enableTools = try container.decodeIfPresent(Bool.self, forKey: .enableTools) ?? true
+        confirmTools = try container.decodeIfPresent(Bool.self, forKey: .confirmTools) ?? true
+        terminalHost = try container.decodeIfPresent(String.self, forKey: .terminalHost) ?? ""
+        terminalToken = try container.decodeIfPresent(String.self, forKey: .terminalToken) ?? ""
+    }
 }
 
 // MARK: - 图片压缩

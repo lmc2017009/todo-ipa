@@ -11,6 +11,7 @@ final class ChatStore: ObservableObject {
     private let conversationsURL: URL
     private let settingsURL: URL
     private let modelsCacheKey = "aichat.models.v1"
+    private var saveTask: Task<Void, Never>?
 
     init() {
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -43,24 +44,28 @@ final class ChatStore: ObservableObject {
     func newConversation() -> UUID {
         let conversation = Conversation()
         conversations.insert(conversation, at: 0)
-        saveConversations()
+        flush()
         return conversation.id
     }
 
     func deleteConversation(id: UUID) {
         conversations.removeAll { $0.id == id }
-        saveConversations()
+        flush()
     }
 
     func rename(id: UUID, title: String) {
         guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         conversations[index].title = trimmed.isEmpty ? "新对话" : trimmed
-        saveConversations()
+        flush()
+    }
+
+    func conversation(_ id: UUID) -> Conversation? {
+        conversations.first(where: { $0.id == id })
     }
 
     func messages(for id: UUID) -> [ChatMessage] {
-        conversations.first(where: { $0.id == id })?.messages ?? []
+        conversation(id)?.messages ?? []
     }
 
     func append(_ message: ChatMessage, to id: UUID) {
@@ -78,12 +83,24 @@ final class ChatStore: ObservableObject {
 
         let updated = conversations.remove(at: index)
         conversations.insert(updated, at: 0)
-        saveConversations()
+        scheduleSave()
+    }
+
+    /// 流式更新时逐字修改，不落盘（由 scheduleSave 合并写入）
+    func patchMessage(_ messageID: UUID, in conversationID: UUID,
+                      _ block: (inout ChatMessage) -> Void) {
+        guard let cIndex = conversations.firstIndex(where: { $0.id == conversationID }),
+              let mIndex = conversations[cIndex].messages.firstIndex(where: { $0.id == messageID }) else {
+            return
+        }
+        block(&conversations[cIndex].messages[mIndex])
+        conversations[cIndex].updatedAt = Date()
+        scheduleSave()
     }
 
     func clearConversations() {
         conversations.removeAll()
-        saveConversations()
+        flush()
     }
 
     // MARK: - 配置
@@ -141,7 +158,18 @@ final class ChatStore: ObservableObject {
         apiKey = Keychain.read()
     }
 
-    private func saveConversations() {
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            self.flush()
+        }
+    }
+
+    func flush() {
+        saveTask?.cancel()
+        saveTask = nil
         guard let data = try? JSONEncoder().encode(conversations) else { return }
         try? data.write(to: conversationsURL, options: .atomic)
     }

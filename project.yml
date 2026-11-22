@@ -23,15 +23,26 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: AI对话
-        CFBundleShortVersionString: "2.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "2.1"
+        CFBundleVersion: "2"
         LSRequiresIPhoneOS: true
         UIDesignRequiresCompatibility: false
         # 允许用户自填的 http 端点（本地 Ollama / LM Studio 等）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSPhotoLibraryUsageDescription: 需要访问相册，以便在聊天中发送图片。
+        NSPhotoLibraryUsageDescription: 需要访问相册，以便在聊天中发送图片，并让模型读取最近照片。
+        NSPhotoLibraryAddUsageDescription: 需要写入相册，以便保存图片。
         NSCameraUsageDescription: 需要使用相机，以便拍照后发送到聊天。
+        NSMicrophoneUsageDescription: 需要使用麦克风，以便把语音作为模型输入。
+        NSLocationWhenInUseUsageDescription: 需要获取当前位置，以便模型回答与位置相关的问题。
+        NSContactsUsageDescription: 需要访问通讯录，以便模型按姓名查找联系人。
+        NSCalendarsUsageDescription: 需要访问日历，以便模型查询近期日程。
+        NSCalendarsFullAccessUsageDescription: 需要完整访问日历，以便模型查询与整理日程。
+        NSRemindersUsageDescription: 需要访问提醒事项，以便模型创建提醒。
+        NSRemindersFullAccessUsageDescription: 需要完整访问提醒事项，以便模型创建与查看提醒。
+        NSMotionUsageDescription: 需要读取运动传感器，以便模型了解设备姿态。
+        NSLocalNetworkUsageDescription: 需要访问局域网，以便连接你自己电脑上的终端执行器。
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -41,8 +52,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.operit.aichat
         PRODUCT_NAME: AIChat
-        MARKETING_VERSION: "2.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "2.1"
+        CURRENT_PROJECT_VERSION: "2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: "NO"

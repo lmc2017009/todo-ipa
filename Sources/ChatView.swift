@@ -2,363 +2,439 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 
-@MainActor
 struct ChatView: View {
-    @EnvironmentObject private var store: ChatStore
-    @StateObject private var engine = ChatEngine()
-
     let conversationID: UUID
 
-    @State private var input: String = ""
-    @State private var pending: [Attachment] = []
-    @State private var photoItems: [PhotosPickerItem] = []
-    @State private var showFilePicker = false
-    @State private var notice: String?
+    @EnvironmentObject private var store: ChatStore
+    @EnvironmentObject private var engine: ChatEngine
+    @EnvironmentObject private var permissions: PermissionCenter
+    @EnvironmentObject private var approvals: ApprovalCenter
 
-    private var conversation: Conversation? {
-        store.conversations.first(where: { $0.id == conversationID })
-    }
-
-    private var messages: [ChatMessage] {
-        conversation?.messages ?? []
-    }
-
-    private var canSend: Bool {
-        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty
-    }
-
-    private var modelLabel: String {
-        let model = store.effectiveModel
-        return model.isEmpty ? "选择模型" : model
-    }
+    @State private var text: String = ""
+    @State private var attachments: [Attachment] = []
+    @State private var pickedItems: [PhotosPickerItem] = []
+    @State private var showFileImporter = false
+    @State private var banner: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            messageArea
-            composer
+            messageList
         }
-        .navigationTitle(conversation?.title ?? "对话")
+        .liquidBackdrop()
+        .safeAreaInset(edge: .bottom) { composer }
+        .navigationTitle(store.conversation(conversationID)?.title ?? "对话")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
-        .fileImporter(isPresented: $showFilePicker,
-                      allowedContentTypes: [.item],
-                      allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result {
-                importFiles(urls)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) { modelMenu }
+        }
+        .sheet(item: approvalBinding) { request in
+            ApprovalSheet(request: request) { approved in
+                approvals.resolve(approved)
             }
+            .presentationDetents([.medium])
         }
-        .onChange(of: photoItems) { items in
+        .fileImporter(isPresented: $showFileImporter,
+                      allowedContentTypes: [.plainText, .text, .json, .csv, .xml, .sourceCode],
+                      allowsMultipleSelection: false) { result in
+            handleFile(result)
+        }
+        .onChange(of: pickedItems) { items in
             guard !items.isEmpty else { return }
-            importPhotos(items)
-            photoItems = []
+            Task { await loadPhotos(items) }
         }
-        .alert("提示", isPresented: noticeBinding) {
-            Button("好", role: .cancel) { notice = nil }
+        .alert("提示", isPresented: bannerBinding) {
+            Button("知道了", role: .cancel) { banner = nil }
         } message: {
-            Text(notice ?? "")
+            Text(banner ?? "")
         }
     }
 
-    // MARK: - 消息区
+    // MARK: - 消息列表
 
-    private var messageArea: some View {
+    private var messages: [ChatMessage] {
+        store.messages(for: conversationID)
+    }
+
+    private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    if messages.isEmpty && !engine.isStreaming {
+                LazyVStack(spacing: 14) {
+                    if messages.isEmpty {
                         emptyState
+                            .padding(.top, 60)
                     }
 
                     ForEach(messages) { message in
-                        MessageBubble(message: message)
-                    }
-
-                    if engine.isStreaming {
-                        MessageBubble(message: ChatMessage(role: .assistant,
-                                                           text: engine.liveText,
-                                                           thinking: engine.liveThinking,
-                                                           sources: engine.liveSources),
-                                      streaming: true)
-                    }
-
-                    if !engine.status.isEmpty {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.mini)
-                            Text(engine.status)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(Capsule())
+                        MessageBubble(message: message,
+                                      isStreaming: engine.isBusy(conversationID)
+                                          && message.id == messages.last?.id
+                                          && message.role == .assistant)
+                            .id(message.id)
                     }
 
                     Color.clear
                         .frame(height: 1)
-                        .id("BOTTOM")
+                        .id("bottom")
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: engine.liveText) { _ in
-                proxy.scrollTo("BOTTOM", anchor: .bottom)
-            }
             .onChange(of: messages.count) { _ in
-                proxy.scrollTo("BOTTOM", anchor: .bottom)
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            .onChange(of: messages.last?.text) { _ in
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
             .onAppear {
-                proxy.scrollTo("BOTTOM", anchor: .bottom)
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
     }
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(spacing: 14) {
             Image(systemName: "sparkles")
-                .font(.system(size: 40, weight: .light))
+                .font(.system(size: 46, weight: .light))
                 .foregroundStyle(.tertiary)
 
-            Text("想聊点什么？")
-                .font(.title3.weight(.semibold))
+            Text("可以开始问了")
+                .font(.headline)
 
-            Text("可以发文字、发照片、传文件；需要实时信息就打开联网搜索。")
-                .font(.footnote)
+            Text("模型取决于你在设置里接入的服务；\n已授权的设备能力会直接交给模型使用。")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.center)
+
+            FlowRow(spacing: 6) {
+                ForEach(permissions.enabledKinds.prefix(6)) { kind in
+                    CapabilityBadge(title: kind.title, icon: kind.icon)
+                }
+            }
+            .padding(.horizontal, 24)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 30)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - 输入区
 
     private var composer: some View {
-        VStack(spacing: 0) {
-            if !pending.isEmpty {
+        VStack(spacing: 10) {
+            if !attachments.isEmpty {
                 attachmentStrip
             }
+            HStack(spacing: 8) {
+                attachMenu
+                photoPicker
 
-            Divider()
 
-            HStack(alignment: .bottom, spacing: 8) {
-                PhotosPicker(selection: $photoItems, maxSelectionCount: 4, matching: .images) {
-                    Image(systemName: "photo.on.rectangle")
-                        .font(.system(size: 22))
-                }
-
-                Button {
-                    showFilePicker = true
-                } label: {
-                    Image(systemName: "paperclip")
-                        .font(.system(size: 22))
-                }
-
-                TextField("发消息…", text: $input, axis: .vertical)
-                    .lineLimit(1...5)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 12)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                TextField("发消息…", text: $text, axis: .vertical)
+                    .lineLimit(1...6)
+                    .font(.body)
+                    .padding(.vertical, 6)
 
                 sendButton
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+
+            chipRow
         }
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .glassSurface(cornerRadius: 28)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
     }
 
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(pending) { item in
-                    HStack(spacing: 6) {
-                        Image(systemName: item.kind == .image ? "photo" : "doc.text")
-                        Text(item.fileName)
-                            .lineLimit(1)
+                ForEach(attachments) { attachment in
+                    ZStack(alignment: .topTrailing) {
+                        if attachment.kind == .image,
+                           let data = Data(base64Encoded: attachment.payload),
+                           let image = UIImage(data: data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 58, height: 58)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        } else {
+                            HStack(spacing: 4) {
+                                Image(systemName: "doc.text")
+                                Text(attachment.fileName)
+                                    .lineLimit(1)
+                            }
+                            .font(.caption2)
+                            .padding(.horizontal, 8)
+                            .frame(height: 58)
+                            .frame(maxWidth: 150)
+                            .glassSurface(cornerRadius: 12)
+                        }
+
                         Button {
-                            pending.removeAll { $0.id == item.id }
+                            attachments.removeAll { $0.id == attachment.id }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.caption)
+                                .font(.system(size: 16))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, Color.black.opacity(0.55))
                         }
+                        .offset(x: 5, y: -5)
                     }
-                    .font(.footnote)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(Capsule())
+                    .padding(.top, 6)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
     }
 
-    private var sendButton: some View {
-        Button {
-            if engine.isStreaming {
-                engine.stop()
-            } else {
-                send()
+    private var attachMenu: some View {
+        Menu {
+            Button {
+                showFileImporter = true
+            } label: {
+                Label("添加文本文件", systemImage: "doc.badge.plus")
             }
         } label: {
-            Image(systemName: engine.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
-                .font(.system(size: 30))
-                .foregroundStyle(canSend || engine.isStreaming ? Color.accentColor : Color.secondary)
+            Image(systemName: "plus.circle")
+                .font(.system(size: 22, weight: .light))
         }
-        .disabled(!canSend && !engine.isStreaming)
     }
 
-    // MARK: - 工具栏
+    private var photoPicker: some View {
+        PhotosPicker(selection: $pickedItems, maxSelectionCount: 4, matching: .images) {
+            Image(systemName: "photo.circle")
+                .font(.system(size: 22, weight: .light))
+        }
+    }
 
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarTrailing) {
+    @ViewBuilder
+    private var sendButton: some View {
+        if engine.isBusy(conversationID) {
+            Button {
+                engine.stop()
+            } label: {
+                Image(systemName: "stop.circle.fill")
+                    .font(.system(size: 27))
+                    .foregroundStyle(.red)
+            }
+        } else {
+            Button {
+                send()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 27))
+                    .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.5))
+            }
+            .disabled(!canSend)
+        }
+    }
+
+    private var chipRow: some View {
+        HStack(spacing: 8) {
             Menu {
-                Section("模型") {
-                    if store.models.isEmpty {
-                        Button("从接口加载模型列表") {
-                            Task { await store.testConnection() }
-                        }
-                    } else {
-                        ForEach(store.models) { model in
-                            Button {
-                                store.settings.model = model.id
-                                store.saveSettings()
-                            } label: {
-                                if model.id == store.effectiveModel {
-                                    Label(model.id, systemImage: "checkmark")
-                                } else {
-                                    Text(model.id)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Section("深度思考") {
-                    ForEach(ThinkingLevel.allCases) { level in
-                        Button {
-                            store.settings.thinkingLevel = level
-                            store.saveSettings()
-                        } label: {
-                            if store.settings.thinkingLevel == level {
-                                Label(level.title, systemImage: "checkmark")
-                            } else {
-                                Text(level.title)
-                            }
-                        }
-                    }
-
-                    if store.currentModelSupportsThinking == false {
-                        Text("该模型未标注支持思考，会自动降级")
-                    }
-                }
-
-                Section {
+                ForEach(ThinkingLevel.allCases) { level in
                     Button {
-                        store.settings.webSearch.toggle()
+                        store.settings.thinkingLevel = level
                         store.saveSettings()
                     } label: {
-                        Label(store.settings.webSearch ? "关闭联网搜索" : "开启联网搜索",
-                              systemImage: store.settings.webSearch ? "globe.badge.chevron.backward" : "globe")
+                        if store.settings.thinkingLevel == level {
+                            Label(level.title, systemImage: "checkmark")
+                        } else {
+                            Text(level.title)
+                        }
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: store.settings.webSearch ? "globe" : "cpu")
-                    Text(modelLabel)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
-                }
-                .font(.footnote)
+                CapabilityBadge(title: "思考 \(store.settings.thinkingLevel.title)",
+                                icon: "brain",
+                                tint: store.settings.thinkingLevel == .off ? .secondary : .purple)
+            }
+
+            Button {
+                store.settings.webSearch.toggle()
+                store.saveSettings()
+            } label: {
+                CapabilityBadge(title: "联网",
+                                icon: "globe",
+                                tint: store.settings.webSearch ? .green : .secondary)
+            }
+            .buttonStyle(.plain)
+
+            CapabilityBadge(title: "\(permissions.enabledKinds.count) 项能力",
+                            icon: "square.stack.3d.up",
+                            tint: .blue)
+
+            Spacer(minLength: 0)
+
+            if !store.settings.enableTools {
+                CapabilityBadge(title: "工具已关", icon: "wrench.and.screwdriver", tint: .orange)
             }
         }
     }
 
-    // MARK: - 动作
+    private var modelMenu: some View {
+        Menu {
+            if store.models.isEmpty {
+                Button("到设置里拉取模型列表") { }
+            } else {
+                ForEach(store.models.prefix(40)) { model in
+                    Button {
+                        store.settings.model = model.id
+                        store.saveSettings()
+                    } label: {
+                        if store.effectiveModel == model.id {
+                            Label(model.id, systemImage: "checkmark")
+                        } else {
+                            Text(model.id)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(store.effectiveModel.isEmpty ? "选择模型" : store.effectiveModel)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .glassSurface(cornerRadius: 12)
+        }
+    }
 
-    private var noticeBinding: Binding<Bool> {
-        Binding(get: { notice != nil },
-                set: { if !$0 { notice = nil } })
+    // MARK: - 逻辑
+
+    private var canSend: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
     private func send() {
-        guard !engine.isStreaming else { return }
-        guard store.hasAPI else {
-            notice = "请先在「设置」里填写 API 地址和密钥"
-            return
-        }
-        guard !store.effectiveModel.isEmpty else {
-            notice = "请先选择或填写一个模型"
-            return
-        }
-
-        var message = ChatMessage(role: .user,
-                                  text: input.trimmingCharacters(in: .whitespacesAndNewlines))
-        message.attachments = pending
-        store.append(message, to: conversationID)
-
-        input = ""
-        pending = []
-
-        let history = store.messages(for: conversationID)
-        let settings = store.settings
-        let key = store.apiKey
-        let model = store.effectiveModel
-        let target = conversationID
-
-        engine.send(history: history, settings: settings, apiKey: key, model: model) { text, thinking, sources, failed in
-            var reply = ChatMessage(role: .assistant, text: text)
-            reply.thinking = thinking
-            reply.sources = sources
-            reply.isError = failed
-            store.append(reply, to: target)
-        }
+        guard canSend else { return }
+        let payload = text
+        let files = attachments
+        text = ""
+        attachments = []
+        engine.start(conversationID: conversationID, text: payload, attachments: files)
     }
 
-    private func importPhotos(_ items: [PhotosPickerItem]) {
-        Task {
-            for item in items {
-                guard let data = try? await item.loadTransferable(type: Data.self),
-                      let image = UIImage(data: data),
-                      let jpeg = ImageTool.jpeg(image) else {
-                    continue
+    private func loadPhotos(_ items: [PhotosPickerItem]) async {
+        for item in items {
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data),
+                  let jpeg = ImageTool.jpeg(image) else { continue }
+
+            let attachment = Attachment(kind: .image,
+                                        fileName: "image-\(Int(Date().timeIntervalSince1970)).jpg",
+                                        mimeType: "image/jpeg",
+                                        payload: jpeg.base64EncodedString(),
+                                        byteCount: jpeg.count)
+            attachments.append(attachment)
+        }
+        pickedItems = []
+    }
+
+    private func handleFile(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+        guard let data = try? Data(contentsOf: url) else {
+            banner = "读不到这个文件"
+            return
+        }
+
+        guard let content = String(data: data, encoding: .utf8) else {
+            banner = "目前只支持文本类文件（PDF / Word 请先转成文本）"
+            return
+        }
+
+        attachments.append(Attachment(kind: .file,
+                                      fileName: url.lastPathComponent,
+                                      mimeType: "text/plain",
+                                      payload: String(content.prefix(60_000)),
+                                      byteCount: data.count))
+    }
+
+    private var bannerBinding: Binding<Bool> {
+        Binding(get: { banner != nil }, set: { if !$0 { banner = nil } })
+    }
+
+    private var approvalBinding: Binding<ApprovalCenter.Request?> {
+        Binding(get: { approvals.request },
+                set: { value in
+                    if value == nil, approvals.request != nil {
+                        approvals.resolve(false)
+                    }
+                })
+    }
+}
+
+// MARK: - 确认弹窗
+
+struct ApprovalSheet: View {
+    let request: ApprovalCenter.Request
+    let onDecision: (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: request.isDangerous ? "exclamationmark.triangle.fill" : "wrench.and.screwdriver.fill")
+                    .font(.title3)
+                    .foregroundStyle(request.isDangerous ? .orange : .accentColor)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("模型想执行工具")
+                        .font(.headline)
+                    Text(request.call.name)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                let attachment = Attachment(kind: .image,
-                                           fileName: "图片-\(pending.count + 1).jpg",
-                                           mimeType: "image/jpeg",
-                                           payload: jpeg.base64EncodedString(),
-                                           byteCount: jpeg.count)
-                pending.append(attachment)
+
+                Spacer(minLength: 0)
+            }
+
+            ScrollView {
+                Text(request.detail)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 160)
+            .padding(12)
+            .glassSurface(cornerRadius: 14)
+
+            if request.isDangerous {
+                Text("这个操作会修改设备上的内容，请确认你了解它的作用。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 10) {
+                Button {
+                    onDecision(false)
+                } label: {
+                    Text("拒绝")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    onDecision(true)
+                } label: {
+                    Text("允许")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
-    }
-
-    private func importFiles(_ urls: [URL]) {
-        for url in urls {
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer {
-                if accessing { url.stopAccessingSecurityScopedResource() }
-            }
-
-            guard let data = try? Data(contentsOf: url) else { continue }
-
-            if data.count <= 300_000, let text = String(data: data, encoding: .utf8) {
-                let attachment = Attachment(kind: .file,
-                                            fileName: url.lastPathComponent,
-                                            mimeType: "text/plain",
-                                            payload: text,
-                                            byteCount: data.count)
-                pending.append(attachment)
-            } else {
-                notice = "「\(url.lastPathComponent)」不是可读的文本文件，暂时只能发送图片或文本类文件"
-            }
-        }
+        .padding(20)
     }
 }

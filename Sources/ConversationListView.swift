@@ -24,6 +24,7 @@ struct ConversationListView: View {
                     NavigationLink(value: conversation.id) {
                         row(conversation)
                     }
+                    .listRowBackground(Color.clear)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
                             store.deleteConversation(id: conversation.id)
@@ -48,6 +49,8 @@ struct ConversationListView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .liquidBackdrop()
             .navigationTitle("聊天")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

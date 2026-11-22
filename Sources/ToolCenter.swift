@@ -1,0 +1,512 @@
+import Foundation
+import Contacts
+import EventKit
+import Photos
+import UIKit
+import UserNotifications
+
+/// 给模型执行设备能力的工具中心
+@MainActor
+final class ToolCenter {
+    static let shared = ToolCenter()
+
+    // MARK: - 工具声明
+
+    func definitions(enabled: [CapabilityKind], terminalConfigured: Bool) -> [[String: Any]] {
+        var tools: [[String: Any]] = []
+
+        func add(_ name: String, _ description: String,
+                 _ properties: [String: Any], _ required: [String]) {
+            tools.append([
+                "type": "function",
+                "function": [
+                    "name": name,
+                    "description": description,
+                    "parameters": [
+                        "type": "object",
+                        "properties": properties,
+                        "required": required
+                    ]
+                ]
+            ])
+        }
+
+        let set = Set(enabled)
+
+        if set.contains(.deviceInfo) {
+            add("device_info", "读取本机档案：机型、系统、电量、内存、存储、网络、时间", [:], [])
+        }
+
+        if set.contains(.fileSandbox) {
+            add("fs_list", "列出沙盒目录内容（根目录写作 /）",
+                ["path": ["type": "string", "description": "目录路径，如 / 或 /notes"]], [])
+            add("fs_read", "读取沙盒内的文本文件",
+                ["path": ["type": "string"]], ["path"])
+            add("fs_write", "在沙盒写入文本文件，自动创建目录",
+                ["path": ["type": "string"], "content": ["type": "string"]], ["path", "content"])
+            add("fs_delete", "删除沙盒内的文件或目录",
+                ["path": ["type": "string"]], ["path"])
+            add("fs_search", "在沙盒内按关键词搜索文件名与文件内容",
+                ["keyword": ["type": "string"]], ["keyword"])
+        }
+
+        if set.contains(.shell) {
+            let mode = terminalConfigured ? "已连接远程主机，可执行真实 shell 命令" : "当前是沙盒模拟终端，只能操作 App 文档目录"
+            add("shell", "执行 shell 命令。\(mode)。可用命令：ls/cat/echo/mkdir/rm/find/df/date/whoami/uname/help",
+                ["command": ["type": "string"]], ["command"])
+        }
+
+        if set.contains(.clipboard) {
+            add("clipboard", "读取或写入剪贴板文本",
+                ["action": ["type": "string", "enum": ["get", "set"]],
+                 "text": ["type": "string", "description": "action=set 时要写入的文本"]],
+                ["action"])
+        }
+
+        if set.contains(.motion) {
+            add("motion", "读取设备当前的加速度与陀螺仪数据", [:], [])
+        }
+
+        if set.contains(.location) {
+            add("location", "获取设备当前经纬度", [:], [])
+        }
+
+        if set.contains(.contacts) {
+            add("contacts_search", "按姓名搜索通讯录联系人",
+                ["query": ["type": "string"]], ["query"])
+        }
+
+        if set.contains(.calendar) {
+            add("calendar_events", "查询未来若干天的日历日程",
+                ["days": ["type": "integer", "description": "查询天数，默认 7"]], [])
+        }
+
+        if set.contains(.reminders) {
+            add("reminder_create", "创建一条提醒事项",
+                ["title": ["type": "string"],
+                 "due": ["type": "string", "description": "可选，格式 yyyy-MM-dd HH:mm"]],
+                ["title"])
+        }
+
+        if set.contains(.notifications) {
+            add("notify", "发送一条本地通知提醒用户",
+                ["title": ["type": "string"],
+                 "body": ["type": "string"],
+                 "seconds": ["type": "integer", "description": "多少秒后提醒，默认 1"]],
+                ["title"])
+        }
+
+        if set.contains(.photoLibrary) {
+            add("photos_recent", "把相册里最近的照片复制到沙盒，返回文件路径",
+                ["limit": ["type": "integer", "description": "取几张，默认 3，最多 10"]], [])
+        }
+
+        return tools
+    }
+
+    // MARK: - 执行
+
+    func run(_ call: ToolCallRecord, settings: APISettings) async -> String {
+        let arguments = Self.parse(call.arguments)
+
+        switch call.name {
+        case "device_info":
+            return DeviceProfile.summary()
+
+        case "fs_list":
+            return list(path: arguments["path"] as? String ?? "/")
+
+        case "fs_read":
+            guard let path = arguments["path"] as? String else { return "缺少参数 path" }
+            return read(path: path)
+
+        case "fs_write":
+            guard let path = arguments["path"] as? String,
+                  let content = arguments["content"] as? String else { return "缺少参数 path / content" }
+            return write(path: path, content: content)
+
+        case "fs_delete":
+            guard let path = arguments["path"] as? String else { return "缺少参数 path" }
+            return delete(path: path)
+
+        case "fs_search":
+            guard let keyword = arguments["keyword"] as? String else { return "缺少参数 keyword" }
+            return search(keyword: keyword)
+
+        case "shell":
+            guard let command = arguments["command"] as? String else { return "缺少参数 command" }
+            if settings.terminalHost.trimmingCharacters(in: .whitespaces).isEmpty {
+                return sandboxShell(command)
+            }
+            return await remoteShell(command, settings: settings)
+
+        case "clipboard":
+            let action = (arguments["action"] as? String) ?? "get"
+            if action == "set" {
+                UIPasteboard.general.string = arguments["text"] as? String ?? ""
+                return "已写入剪贴板"
+            }
+            return UIPasteboard.general.string ?? "剪贴板为空"
+
+        case "motion":
+            return DeviceProfile.motionText()
+
+        case "location":
+            guard let location = await LocationProvider.shared.current() else {
+                return "定位不可用或未授权"
+            }
+            return String(format: "纬度 %.6f，经度 %.6f（水平精度约 %.0f 米）",
+                          location.coordinate.latitude,
+                          location.coordinate.longitude,
+                          location.horizontalAccuracy)
+
+        case "contacts_search":
+            guard let query = arguments["query"] as? String else { return "缺少参数 query" }
+            return searchContacts(query)
+
+        case "calendar_events":
+            let days = (arguments["days"] as? Int) ?? 7
+            return calendarEvents(days: days)
+
+        case "reminder_create":
+            guard let title = arguments["title"] as? String else { return "缺少参数 title" }
+            return createReminder(title: title, due: arguments["due"] as? String)
+
+        case "notify":
+            let title = (arguments["title"] as? String) ?? "提醒"
+            let body = (arguments["body"] as? String) ?? ""
+            let seconds = (arguments["seconds"] as? Int) ?? 1
+            return notify(title: title, body: body, seconds: seconds)
+
+        case "photos_recent":
+            let limit = (arguments["limit"] as? Int) ?? 3
+            return await recentPhotos(limit: limit)
+
+        default:
+            return "未知工具：\(call.name)"
+        }
+    }
+
+    // MARK: - 文件系统
+
+    private func documents() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    private func resolve(_ path: String) -> URL? {
+        let root = documents().standardizedFileURL
+        var trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "/" { return root }
+        if trimmed.hasPrefix("/") { trimmed.removeFirst() }
+        let candidate = root.appendingPathComponent(trimmed).standardizedFileURL
+        guard candidate.path == root.path || candidate.path.hasPrefix(root.path + "/") else {
+            return nil
+        }
+        return candidate
+    }
+
+    private func relativePath(_ url: URL) -> String {
+        let root = documents().standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        if path == root { return "/" }
+        guard path.hasPrefix(root) else { return path }
+        return String(path.dropFirst(root.count))
+    }
+
+    private func list(path: String) -> String {
+        guard let url = resolve(path) else { return "路径越界，拒绝访问" }
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]) else {
+            return "无法读取目录：\(path)"
+        }
+        if items.isEmpty { return "（空目录）" }
+
+        var lines: [String] = []
+        for item in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            if values?.isDirectory == true {
+                lines.append("[目录] \(item.lastPathComponent)/")
+            } else {
+                lines.append("[文件] \(item.lastPathComponent)  \(values?.fileSize ?? 0) B")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func read(path: String) -> String {
+        guard let url = resolve(path) else { return "路径越界，拒绝访问" }
+        guard let data = try? Data(contentsOf: url) else { return "读取失败：\(path)" }
+        if data.count > 200_000 {
+            let head = String(data: data.prefix(200_000), encoding: .utf8) ?? "（非文本内容）"
+            return "文件较大（\(data.count) 字节），只读取前 200 KB：\n" + head
+        }
+        return String(data: data, encoding: .utf8) ?? "（不是文本文件，\(data.count) 字节）"
+    }
+
+    private func write(path: String, content: String) -> String {
+        guard let url = resolve(path) else { return "路径越界，拒绝访问" }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            return "已写入 \(relativePath(url))（\(content.count) 字符）"
+        } catch {
+            return "写入失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func delete(path: String) -> String {
+        guard let url = resolve(path), url.path != documents().standardizedFileURL.path else {
+            return "不能删除根目录"
+        }
+        do {
+            try FileManager.default.removeItem(at: url)
+            return "已删除 \(path)"
+        } catch {
+            return "删除失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func search(keyword: String) -> String {
+        let root = documents()
+        var results: [String] = []
+        let keys: [URLResourceKey] = [.isDirectoryKey]
+
+        if let enumerator = FileManager.default.enumerator(at: root,
+                                                           includingPropertiesForKeys: keys,
+                                                           options: [.skipsHiddenFiles]) {
+            for case let url as URL in enumerator {
+                if results.count >= 20 { break }
+                let values = try? url.resourceValues(forKeys: Set(keys))
+                if values?.isDirectory == true { continue }
+
+                if url.lastPathComponent.lowercased().contains(keyword.lowercased()) {
+                    results.append("[名字] \(relativePath(url))")
+                    continue
+                }
+                if let text = try? String(contentsOf: url, encoding: .utf8),
+                   text.localizedCaseInsensitiveContains(keyword) {
+                    results.append("[内容] \(relativePath(url))")
+                }
+            }
+        }
+
+        return results.isEmpty ? "没有找到包含「\(keyword)」的文件" : results.joined(separator: "\n")
+    }
+
+    // MARK: - 终端
+
+    private func sandboxShell(_ command: String) -> String {
+        let parts = command.split(separator: " ").map(String.init)
+        guard let head = parts.first else { return "空命令" }
+        let arguments = Array(parts.dropFirst())
+
+        switch head {
+        case "help":
+            return "沙盒模拟终端。可用：pwd ls cat echo mkdir rm find df date whoami uname help"
+
+        case "pwd":
+            return "/"
+
+        case "ls":
+            return list(path: arguments.first ?? "/")
+
+        case "cat":
+            guard let name = arguments.first else { return "用法：cat <文件>" }
+            return read(path: name)
+
+        case "echo":
+            let text = arguments.joined(separator: " ")
+            return text.isEmpty ? "\n" : text
+
+        case "mkdir":
+            guard let name = arguments.first, let url = resolve(name) else { return "路径无效" }
+            do {
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                return "已创建目录 \(name)"
+            } catch {
+                return "创建失败：\(error.localizedDescription)"
+            }
+
+        case "rm":
+            guard let name = arguments.first else { return "用法：rm <文件>" }
+            return delete(path: name)
+
+        case "find":
+            guard let keyword = arguments.first else { return "用法：find <关键词>" }
+            return search(keyword: keyword)
+
+        case "df":
+            return DeviceProfile.diskText()
+
+        case "date":
+            return DeviceProfile.dateText(Date())
+
+        case "whoami":
+            return "mobile（沙盒用户）"
+
+        case "uname":
+            return "iOS \(UIDevice.current.systemVersion) \(DeviceProfile.machineIdentifier())"
+
+        default:
+            return "沙盒内不支持「\(head)」。可用：ls cat echo mkdir rm find df date whoami uname help"
+        }
+    }
+
+    private func remoteShell(_ command: String, settings: APISettings) async -> String {
+        var raw = settings.terminalHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.lowercased().hasPrefix("http") { raw = "http://" + raw }
+        guard let url = URL(string: raw) else { return "远程终端地址无效" }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !settings.terminalToken.isEmpty {
+            request.setValue(settings.terminalToken, forHTTPHeaderField: "X-Token")
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["cmd": command])
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let text = String(data: data, encoding: .utf8) ?? ""
+            return "exit \(code)\n\(text.isEmpty ? "（无输出）" : text)"
+        } catch {
+            return "远程执行失败：\(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - 系统能力
+
+    private func searchContacts(_ query: String) -> String {
+        let store = CNContactStore()
+        let keys: [CNKeyDescriptor] = [
+            CNContactGivenNameKey as CNKeyDescriptor,
+            CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactPhoneNumbersKey as CNKeyDescriptor
+        ]
+        let predicate = CNContact.predicateForContacts(matchingName: query)
+        guard let contacts = try? store.unifiedContacts(matching: predicate, keysToFetch: keys) else {
+            return "通讯录未授权或查询失败"
+        }
+        if contacts.isEmpty { return "没有找到「\(query)」" }
+
+        return contacts.prefix(10).map { contact in
+            let name = contact.familyName + contact.givenName
+            let phones = contact.phoneNumbers.map { $0.value.stringValue }.joined(separator: ", ")
+            return "\(name)：\(phones.isEmpty ? "无号码" : phones)"
+        }.joined(separator: "\n")
+    }
+
+    private func calendarEvents(days: Int) -> String {
+        let store = EKEventStore()
+        let start = Date()
+        let end = Calendar.current.date(byAdding: .day,
+                                        value: max(1, min(days, 60)),
+                                        to: start) ?? start
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        let events = store.events(matching: predicate)
+        if events.isEmpty { return "未来 \(days) 天没有日程" }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM-dd HH:mm"
+
+        return events.prefix(15).map { event in
+            "\(formatter.string(from: event.startDate)) \(event.title ?? "(无标题)")"
+        }.joined(separator: "\n")
+    }
+
+    private func createReminder(title: String, due: String?) -> String {
+        let store = EKEventStore()
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = title
+        reminder.calendar = store.defaultCalendarForNewReminders()
+
+        if let due, !due.isEmpty {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            for format in ["yyyy-MM-dd HH:mm", "yyyy-MM-dd"] {
+                formatter.dateFormat = format
+                if let date = formatter.date(from: due) {
+                    reminder.dueDateComponents = Calendar.current.dateComponents(
+                        [.year, .month, .day, .hour, .minute], from: date)
+                    break
+                }
+            }
+        }
+
+        do {
+            try store.save(reminder, commit: true)
+            return "已创建提醒：\(title)"
+        } catch {
+            return "创建提醒失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func notify(title: String, body: String, seconds: Int) -> String {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+
+        let delay = max(1, min(seconds, 86_400))
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: Double(delay), repeats: false)
+        let request = UNNotificationRequest(identifier: UUID().uuidString,
+                                            content: content,
+                                            trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+        return "已安排在 \(delay) 秒后提醒：\(title)"
+    }
+
+    private func recentPhotos(limit: Int) async -> String {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else {
+            return "相册未授权，无法读取"
+        }
+
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.fetchLimit = max(1, min(limit, 10))
+        let assets = PHAsset.fetchAssets(with: options)
+        if assets.count == 0 { return "相册里没有照片" }
+
+        let directory = documents().appendingPathComponent("photos")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        var saved: [String] = []
+        let manager = PHImageManager.default()
+        let requestOptions = PHImageRequestOptions()
+        requestOptions.isSynchronous = true
+        requestOptions.deliveryMode = .highQualityFormat
+
+        var index = 0
+        assets.enumerateObjects { asset, _, _ in
+            index += 1
+            let name = "photo-\(Int(Date().timeIntervalSince1970))-\(index).jpg"
+            let target = directory.appendingPathComponent(name)
+            manager.requestImageDataAndOrientation(for: asset, options: requestOptions) { data, _, _, _ in
+                guard let data else { return }
+                if (try? data.write(to: target)) != nil {
+                    saved.append("/photos/\(name)")
+                }
+            }
+        }
+
+        return saved.isEmpty ? "读取照片失败" : "已保存到沙盒：\n" + saved.joined(separator: "\n")
+    }
+
+    // MARK: - 工具函数
+
+    private static func parse(_ raw: String) -> [String: Any] {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
+    }
+}
