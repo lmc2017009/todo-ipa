@@ -67,7 +67,6 @@ enum LocalShell {
         posix_spawn_file_actions_adddup2(&fileActions, fds[1], STDERR_FILENO)
         posix_spawn_file_actions_addclose(&fileActions, fds[0])
         posix_spawn_file_actions_addclose(&fileActions, fds[1])
-        posix_spawn_file_actions_addchdir_np(&fileActions, workingDirectory)
 
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
@@ -89,7 +88,8 @@ enum LocalShell {
             }
         }
 
-        let arguments: [String] = [bb, "sh", "-c", command]
+        let wrapped = "cd \(Self.shellQuote(workingDirectory)) 2>/dev/null || exit 126; " + command
+        let arguments: [String] = [bb, "sh", "-c", wrapped]
         var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) }
         argv.append(nil)
         var envp: [UnsafeMutablePointer<CChar>?] = environment.map { strdup($0) }
@@ -168,5 +168,10 @@ enum LocalShell {
             ?? "（输出无法按 UTF-8 解码，\(data.count) 字节）"
         if timedOut { output += "\n（执行超过 \(Int(timeout)) 秒，已强制终止）" }
         return RunResult(code: code, output: output, timedOut: timedOut)
+    }
+
+    /// POSIX shell 单引号转义（用于 cd）
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
